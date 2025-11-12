@@ -1,0 +1,25 @@
+[project]
+name = "local-llm-cli"
+version = "0.1.0"
+description = "A Gemini-like CLI for local language models"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "requests>=2.31.0",
+]
+
+[project.scripts]
+llm = "local_llm_cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+dev-dependencies = []
