@@ -3,13 +3,18 @@ name = "local-llm-cli"
 version = "0.1.0"
 description = "A Gemini-like CLI for local language models"
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.10"
 dependencies = [
     "requests>=2.31.0",
+    "mcp>=0.9.0",
+    "typing-extensions>=4.5.0",
 ]
 
 [project.scripts]
 llm = "local_llm_cli:main"
+llm-mcp-filesystem = "local_llm_cli.mcp_servers.filesystem:main"
+llm-mcp-math = "local_llm_cli.mcp_servers.math:main"
+llm-mcp-system = "local_llm_cli.mcp_servers.system:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
