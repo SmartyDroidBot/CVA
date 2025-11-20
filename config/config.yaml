@@ -1,0 +1,58 @@
+backend:
+  type: ollama
+  url: http://localhost:11434
+  default_model: qwen3:8b
+  timeout: 120
+default_agent: general
+agents:
+  general:
+    temperature: 0.7
+    max_tokens: null
+    system_prompt: You are a helpful AI assistant.
+    preferred_model: null
+  coding:
+    temperature: 0.2
+    max_tokens: null
+    system_prompt: You are an expert programmer. Provide clear, efficient code with
+      explanations.
+    preferred_model: codellama
+  conversational:
+    temperature: 0.8
+    max_tokens: null
+    system_prompt: You are a friendly conversational AI. Be warm, engaging, and personable.
+    preferred_model: null
+mcp_servers:
+  filesystem:
+    command: D:\Projects\CVA\.venv\Scripts\python.exe
+    args:
+    - -m
+    - local_llm_cli.mcp_servers.filesystem
+    env: null
+    enabled: false
+  math:
+    command: D:\Projects\CVA\.venv\Scripts\python.exe
+    args:
+    - -m
+    - local_llm_cli.mcp_servers.math
+    env: null
+    enabled: false
+  system:
+    command: D:\Projects\CVA\.venv\Scripts\python.exe
+    args:
+    - -m
+    - local_llm_cli.mcp_servers.system
+    env: null
+    enabled: false
+  burp:
+    command: c:\users\eshaa\appdata\local\programs\burpsuitecommunity\jre\bin\java.exe
+    args:
+    - -jar
+    - C:\Users\eshaa\AppData\Roaming\BurpSuite\mcp-proxy\mcp-proxy-all.jar
+    - --sse-url
+    - http://127.0.0.1:9876
+    env: null
+    enabled: true
+    type: sse
+    url: http://127.0.0.1:9876
+verbose: false
+color_output: true

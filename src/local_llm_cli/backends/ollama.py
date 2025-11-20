@@ -4,7 +4,7 @@ import json
 import requests
 from typing import Iterator, List, Optional
 
-from .base import LLMBackend, ModelInfo, GenerationConfig, Message
+from .base import LLMBackend, ModelInfo, GenerationConfig, GenerationResponse, Message
 
 
 class OllamaBackend(LLMBackend):
@@ -53,7 +53,60 @@ class OllamaBackend(LLMBackend):
                     f"Available models: {', '.join([m.name for m in self.list_models()])}. "
                     f"Pull a model with: ollama pull {self.model}"
                 )
-            raise RuntimeError(f"HTTP error: {e}")
+            raise RuntimeError(f"Failed to list models: {e}")
+    
+    def generate(
+        self,
+        model: str,
+        messages: List[Message],
+        config: Optional[GenerationConfig] = None
+    ) -> GenerationResponse:
+        """Generate response using Ollama chat API"""
+        if config is None:
+            config = GenerationConfig()
+        
+        url = f"{self.base_url}/api/chat"
+        
+        # Convert messages to format expected by Ollama
+        formatted_messages = [{"role": msg.role, "content": msg.content} for msg in messages]
+        
+        payload = {
+            "model": model,
+            "messages": formatted_messages,
+            "stream": False,
+            "options": {
+                "temperature": config.temperature
+            }
+        }
+        
+        if config.max_tokens:
+            payload["options"]["num_predict"] = config.max_tokens
+        
+        try:
+            response = requests.post(url, json=payload, timeout=config.timeout)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract response content
+            message_content = data.get("message", {}).get("content", "")
+            
+            # Extract usage information if available
+            usage = None
+            if "eval_count" in data:
+                usage = {
+                    "prompt_tokens": data.get("prompt_eval_count", 0),
+                    "completion_tokens": data.get("eval_count", 0),
+                    "total_tokens": data.get("prompt_eval_count", 0) + data.get("eval_count", 0)
+                }
+            
+            return GenerationResponse(
+                content=message_content,
+                model=model,
+                usage=usage,
+                finish_reason=data.get("done_reason", "stop")
+            )
+        except requests.exceptions.ConnectionError:
+            raise ConnectionError(f"Cannot connect to Ollama at {self.base_url}. Is Ollama running?")
         except Exception as e:
             raise RuntimeError(f"Error generating response: {e}")
     

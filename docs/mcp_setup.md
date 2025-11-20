@@ -82,7 +82,7 @@ npx @modelcontextprotocol/server-filesystem
 
 ### Option 1: Quick Start (No Config File)
 
-For testing, you can run MCP servers directly:
+For testing, you can run MCP servers directly and point the CLI at them using `--url`/`--tool-params`:
 
 ```powershell
 # In one terminal, start an MCP server
@@ -93,7 +93,7 @@ npx -y @modelcontextprotocol/server-filesystem d:\Projects
 
 ### Option 2: Configuration File (Recommended)
 
-Create `~/.llm-cli/config.yaml`:
+Create or edit `config/config.yaml` (or pass `--config PATH` to store it elsewhere):
 
 ```yaml
 mcp_servers:
@@ -142,15 +142,17 @@ Once configured, tools are automatically available:
 
 ```powershell
 # List all available tools
-llm --list-tools
+uv run llm --list-tools
 
 # Use a tool
-llm --use-tool read_file path=README.md
+uv run llm --use-tool read_file --tool-params path=README.md
 
 # Use tools with agents
-llm --agent coding --chat
+uv run llm --agent coding --chat
 # Agent can now access filesystem tools
 ```
+
+> ℹ️ Pass multiple parameters by repeating `--tool-params`, e.g. `--tool-params repo=owner/project --tool-params title="Bug"`.
 
 ## Example: Filesystem Server
 
@@ -160,7 +162,7 @@ npm install -g @modelcontextprotocol/server-filesystem
 ```
 
 ### 2. Configure
-Add to `config.yaml`:
+Add to `config/config.yaml`:
 ```yaml
 mcp_servers:
   filesystem:
@@ -173,16 +175,16 @@ mcp_servers:
 ### 3. Use
 ```powershell
 # List tools
-llm --list-tools
+uv run llm --list-tools
 
 # Read a file
-llm --use-tool read_file path=src/main.py
+uv run llm --use-tool read_file --tool-params path=src/main.py
 
 # Search files
-llm --use-tool search_files pattern="*.py" path=src/
+uv run llm --use-tool search_files --tool-params pattern="*.py" --tool-params path=src/
 
 # Use with agent
-llm --agent coding "Read and analyze src/main.py"
+uv run llm --agent coding "Read and analyze src/main.py"
 ```
 
 ## Example: GitHub Server
@@ -205,13 +207,13 @@ mcp_servers:
 ### 3. Use
 ```powershell
 # List repositories
-llm --use-tool list_repositories
+uv run llm --use-tool list_repositories
 
 # Create an issue
-llm --use-tool create_issue repo=owner/repo title="Bug report" body="Description"
+uv run llm --use-tool create_issue --tool-params repo=owner/repo title="Bug report" body="Description"
 
 # Use with agent
-llm --agent coding "Create an issue in my repo about the bug I just described"
+uv run llm --agent coding "Create an issue in my repo about the bug I just described"
 ```
 
 ## Creating Custom MCP Servers
@@ -235,7 +237,7 @@ if __name__ == "__main__":
     stdio_server(app)
 ```
 
-Then add to config:
+Then add to `config/config.yaml` (or your chosen config path):
 ```yaml
 mcp_servers:
   custom:

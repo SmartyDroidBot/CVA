@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from mcp.client.sse import sse_client
 
 
 @dataclass
@@ -76,14 +77,18 @@ class MCPToolWrapper:
 class MCPServerConnection:
     """Manages connection to a single MCP server"""
     
-    def __init__(self, server_name: str, command: str, args: List[str]):
+    def __init__(self, server_name: str, command: str, args: List[str], connection_type: str = "stdio", url: Optional[str] = None, headers: Optional[Dict[str, str]] = None):
         self.server_name = server_name
         self.command = command
         self.args = args
+        self.connection_type = connection_type
+        self.url = url
+        self.headers = headers or {}
         self._session: Optional[ClientSession] = None
         self._read = None
         self._write = None
         self._initialized = False
+        self._context_manager = None
     
     async def connect(self):
         """Connect to the MCP server"""
@@ -91,28 +96,76 @@ class MCPServerConnection:
             return
         
         try:
-            server_params = StdioServerParameters(
-                command=self.command,
-                args=self.args,
-                env=None
-            )
-            
-            # Create stdio client using context manager
-            stdio_ctx = stdio_client(server_params)
-            self._read, self._write = await stdio_ctx.__aenter__()
+            if self.connection_type == "sse":
+                # SSE connection
+                if not self.url:
+                    print(f"Error: SSE connection requires URL for server {self.server_name}")
+                    self._initialized = False
+                    return
+                
+                # Create SSE client with headers
+                sse_ctx = sse_client(self.url, headers=self.headers if self.headers else None)
+                
+                try:
+                    self._read, self._write = await asyncio.wait_for(
+                        sse_ctx.__aenter__(),
+                        timeout=10.0
+                    )
+                    self._context_manager = sse_ctx
+                except asyncio.TimeoutError:
+                    print(f"Timeout connecting to SSE MCP server {self.server_name} at {self.url}")
+                    self._initialized = False
+                    return
+                except Exception as e:
+                    print(f"Error connecting to SSE server {self.server_name}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    self._initialized = False
+                    return
+            else:
+                # Stdio connection
+                server_params = StdioServerParameters(
+                    command=self.command,
+                    args=self.args,
+                    env=None
+                )
+                
+                # Create stdio client using context manager with timeout
+                stdio_ctx = stdio_client(server_params)
+                
+                # Use asyncio.wait_for with timeout
+                try:
+                    self._read, self._write = await asyncio.wait_for(
+                        stdio_ctx.__aenter__(),
+                        timeout=5.0
+                    )
+                    self._context_manager = stdio_ctx
+                except asyncio.TimeoutError:
+                    print(f"Timeout connecting to stdio MCP server {self.server_name}")
+                    self._initialized = False
+                    return
             
             # Create session
             self._session = ClientSession(self._read, self._write)
             
-            # Initialize the session
-            await self._session.initialize()
+            # Initialize the session with timeout
+            try:
+                await asyncio.wait_for(self._session.initialize(), timeout=30.0)
+            except asyncio.TimeoutError:
+                print(f"Timeout initializing MCP server {self.server_name} (waited 30s)")
+                self._initialized = False
+                return
+            except Exception as e:
+                print(f"Error during initialization of {self.server_name}: {e}")
+                import traceback
+                traceback.print_exc()
+                self._initialized = False
+                return
             
             self._initialized = True
             
         except Exception as e:
             print(f"Error connecting to MCP server {self.server_name}: {e}")
-            import traceback
-            traceback.print_exc()
             self._initialized = False
     
     async def disconnect(self):
@@ -123,7 +176,15 @@ class MCPServerConnection:
             except Exception:
                 pass
             self._session = None
-            self._initialized = False
+        
+        # Clean up stdio streams
+        if self._write:
+            try:
+                self._write.close()
+            except Exception:
+                pass
+        
+        self._initialized = False
     
     async def list_tools(self) -> List[MCPTool]:
         """List all available tools from this server"""
@@ -174,13 +235,13 @@ class MCPManager:
         self._servers: Dict[str, MCPServerConnection] = {}
         self._loop: Optional[asyncio.AbstractEventLoop] = None
     
-    def add_server(self, server_name: str, command: str, args: List[str]) -> bool:
+    def add_server(self, server_name: str, command: str, args: List[str], connection_type: str = "stdio", url: Optional[str] = None, headers: Optional[Dict[str, str]] = None) -> bool:
         """Add an MCP server connection"""
         if server_name in self._servers:
             print(f"Server {server_name} already exists")
             return False
         
-        connection = MCPServerConnection(server_name, command, args)
+        connection = MCPServerConnection(server_name, command, args, connection_type, url, headers)
         
         # Connect to the server
         loop = asyncio.new_event_loop()

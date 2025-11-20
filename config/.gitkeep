@@ -1,0 +1,3 @@
+# Config directory
+# Configuration files (config.yaml, config.json) are gitignored
+# This .gitkeep ensures the directory exists in the repository

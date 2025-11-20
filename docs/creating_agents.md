@@ -36,9 +36,25 @@ This guide shows you how to create custom agents for the Local LLM CLI.
    ```
 
 5. Test your agent:
-   ```powershell
-   llm --agent my_agent "Test prompt"
-   ```
+     ```powershell
+     uv run llm --agent my_agent "Test prompt"
+     ```
+
+## Config-Only Tweaks
+
+Need to adjust temperature, `max_tokens`, or the system prompt without writing Python? Edit `config/config.yaml` under the `agents` section:
+
+```yaml
+agents:
+    general:
+        temperature: 0.6
+        system_prompt: "One-line override"
+    my_agent:
+        temperature: 0.25
+        max_tokens: 2048
+```
+
+These values are validated by Pydantic and automatically applied every time you call the agent.
 
 ## Agent Configuration Options
 
@@ -270,14 +286,14 @@ register_agent(agent)
 
 ```powershell
 # Single prompt
-llm --agent my_agent "Test this functionality"
+uv run llm --agent my_agent "Test this functionality"
 
 # Interactive chat
-llm --chat --agent my_agent
+uv run llm --chat --agent my_agent
 
 # Compare with another agent
-llm --agent general "Same question"
-llm --agent my_agent "Same question"
+uv run llm --agent general "Same question"
+uv run llm --agent my_agent "Same question"
 ```
 
 ## Sharing Your Agents
