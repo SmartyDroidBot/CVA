@@ -43,7 +43,7 @@ ollama list
 ### 4. Initialize and Test the CLI
 
 ```powershell
-# Write config/config.yaml (or .json if PyYAML is unavailable)
+# Write config/config.yaml (plus agents.yaml & mcp_servers.yaml)
 uv run llm --init-config
 
 # Test basic prompt

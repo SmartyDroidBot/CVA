@@ -93,7 +93,7 @@ npx -y @modelcontextprotocol/server-filesystem d:\Projects
 
 ### Option 2: Configuration File (Recommended)
 
-Create or edit `config/config.yaml` (or pass `--config PATH` to store it elsewhere):
+Create or edit `config/mcp_servers.yaml` (or pass `--config PATH` to point at a different directory; companion files share the same folder):
 
 ```yaml
 mcp_servers:
@@ -164,7 +164,7 @@ npm install -g @modelcontextprotocol/server-filesystem
 ```
 
 ### 2. Configure
-Add to `config/config.yaml`:
+Add to `config/mcp_servers.yaml`:
 ```yaml
 mcp_servers:
   filesystem:
@@ -239,7 +239,7 @@ if __name__ == "__main__":
     stdio_server(app)
 ```
 
-Then add to `config/config.yaml` (or your chosen config path):
+Then add to `config/mcp_servers.yaml` (or the corresponding file alongside your base config):
 ```yaml
 mcp_servers:
   custom:

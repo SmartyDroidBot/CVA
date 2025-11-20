@@ -13,7 +13,8 @@ from rich.console import Console
 from ..agents import get_agent, list_agents
 from ..backends import GenerationConfig, Message, get_backend, list_backends
 from ..config import AppConfig, ConfigManager, save_config
-from ..mcp import execute_tool, get_mcp_manager, get_mcp_tools, get_tool
+from ..mcp import add_mcp_server, execute_tool, get_mcp_tools, get_tool
+from ..mcp.tool_runtime import augment_system_prompt, process_response_with_tools
 
 
 app = typer.Typer(add_completion=False, no_args_is_help=False)
@@ -25,6 +26,7 @@ class RuntimeState:
     config: AppConfig
     console: Console = field(default_factory=Console)
     mcp_initialized: bool = False
+    tool_support_enabled: bool = False
 
 
 def _build_console(config: AppConfig) -> Console:
@@ -40,17 +42,17 @@ def _get_state(ctx: typer.Context) -> RuntimeState:
 
 
 def _initialize_mcp_servers(config: AppConfig):
-    manager = get_mcp_manager()
     for server_name, server_config in config.mcp_servers.items():
         if not server_config.enabled:
             continue
-        success = manager.add_server(
+        success = add_mcp_server(
             server_name=server_name,
             command=server_config.command,
             args=server_config.args,
             connection_type=server_config.type,
             url=server_config.url,
             headers=server_config.headers,
+            env=server_config.env,
         )
         if not success and config.verbose:
             print(f"Warning: Failed to load MCP server: {server_name}", file=sys.stderr)
@@ -61,6 +63,7 @@ def _ensure_mcp(state: RuntimeState):
         return
     _initialize_mcp_servers(state.config)
     state.mcp_initialized = True
+    state.tool_support_enabled = bool(get_mcp_tools())
 
 
 def _print_error(state: RuntimeState, message: str):
@@ -83,7 +86,15 @@ def _handle_list_models(state: RuntimeState, backend):
         raise typer.Exit(code=1)
 
 
-def _handle_chat_mode(state: RuntimeState, backend, agent, model: str, config: GenerationConfig, system_override: Optional[str]):
+def _handle_chat_mode(
+    state: RuntimeState,
+    backend,
+    agent,
+    model: str,
+    config: GenerationConfig,
+    system_override: Optional[str],
+    show_thinking: bool,
+):
     console = state.console
     console.print(f"[info]Starting chat mode with model: {model}")
     console.print(f"[info]Using agent: {agent.config.name}")
@@ -91,7 +102,10 @@ def _handle_chat_mode(state: RuntimeState, backend, agent, model: str, config: G
     console.print("=" * 50)
 
     conversation: List[Message] = []
-    system_prompt = system_override or agent.config.system_prompt
+    system_prompt = augment_system_prompt(
+        state.tool_support_enabled,
+        system_override or agent.config.system_prompt,
+    )
     if system_prompt:
         conversation.append(Message(role="system", content=system_prompt))
 
@@ -123,14 +137,40 @@ def _handle_chat_mode(state: RuntimeState, backend, agent, model: str, config: G
             conversation.pop()
             continue
 
-        console.print(response.content)
-        conversation.append(Message(role="assistant", content=response.content))
+        output_text, _ = process_response_with_tools(
+            console=console,
+            tool_support_enabled=state.tool_support_enabled,
+            backend=backend,
+            conversation=conversation,
+            response=response,
+            model=model,
+            config=config,
+        )
+
+        if not show_thinking:
+            output_text = "".join(
+                line for line in output_text.splitlines(keepends=True) if not line.strip().startswith("<think>")
+            )
+
+        console.print(output_text)
 
 
-def _handle_single_prompt(state: RuntimeState, backend, agent, model: str, config: GenerationConfig, prompt: str, system_override: Optional[str]):
+def _handle_single_prompt(
+    state: RuntimeState,
+    backend,
+    agent,
+    model: str,
+    config: GenerationConfig,
+    prompt: str,
+    system_override: Optional[str],
+    show_thinking: bool,
+):
     console = state.console
-    system_prompt = system_override or agent.config.system_prompt
-    conversation = []
+    system_prompt = augment_system_prompt(
+        state.tool_support_enabled,
+        system_override or agent.config.system_prompt,
+    )
+    conversation: List[Message] = []
     if system_prompt:
         conversation.append(Message(role="system", content=system_prompt))
     conversation.append(Message(role="user", content=prompt))
@@ -139,24 +179,28 @@ def _handle_single_prompt(state: RuntimeState, backend, agent, model: str, confi
     except Exception as exc:
         _print_error(state, str(exc))
         raise typer.Exit(code=1)
+
+    output_text, usage = process_response_with_tools(
+        console=console,
+        tool_support_enabled=state.tool_support_enabled,
+        backend=backend,
+        conversation=conversation,
+        response=response,
+        model=model,
+        config=config,
+    )
+
+    if not show_thinking:
+        output_text = "".join(
+            line for line in output_text.splitlines(keepends=True) if not line.strip().startswith("<think>")
+        )
+
     console.print("\n" + "=" * 50)
-    console.print(response.content)
+    console.print(output_text)
     console.print("=" * 50 + "\n")
-    if response.usage:
-        total = response.usage.get("total_tokens", "N/A")
+    if usage:
+        total = usage.get("total_tokens", "N/A")
         console.print(f"[info]Tokens used: {total}")
-
-
-def _parse_tool_params(param_items: Optional[List[str]]) -> Dict[str, str]:
-    if not param_items:
-        return {}
-    params: Dict[str, str] = {}
-    for item in param_items:
-        if "=" not in item:
-            continue
-        key, value = item.split("=", 1)
-        params[key] = value
-    return params
 
 
 @app.callback(invoke_without_command=True)
@@ -183,6 +227,7 @@ def _root_command(
     tool_params: Optional[List[str]] = typer.Option(None, "--tool-params", help="Tool parameters key=value"),
     system_prompt: Optional[str] = typer.Option(None, "--system", help="Override system prompt"),
     verbose: bool = typer.Option(False, "--verbose", help="Enable verbose output"),
+    show_thinking: bool = typer.Option(False, "--show-thinking", help="Include think blocks in the output"),
 ):
     manager = ConfigManager(config)
     app_config = manager.load()
@@ -215,7 +260,8 @@ def _root_command(
                 console.print(f"  {item}")
         raise typer.Exit()
 
-    if list_tools_flag or tool_info or use_tool:
+    tool_flags_requested = list_tools_flag or tool_info or use_tool
+    if tool_flags_requested or state.config.mcp_servers:
         _ensure_mcp(state)
 
     if list_tools_flag:
@@ -234,15 +280,14 @@ def _root_command(
         raise typer.Exit()
 
     if tool_info:
-        tool_wrapper = get_tool(tool_info)
-        if not tool_wrapper:
+        tool_entry = get_tool(tool_info)
+        if not tool_entry:
             _print_error(state, f"Tool '{tool_info}' not found")
             raise typer.Exit(code=1)
-        tool = tool_wrapper.tool
-        console.print(f"Tool: {tool.name}")
-        console.print(f"Server: {tool.server_name}")
-        console.print(f"Description: {tool.description}")
-        params = tool.get_parameters()
+        console.print(f"Tool: {tool_entry.name}")
+        console.print(f"Server: {tool_entry.server_name}")
+        console.print(f"Description: {tool_entry.description}")
+        params = tool_entry.get_parameters()
         console.print("\nParameters:")
         if not params:
             console.print("  (none)")
@@ -258,7 +303,15 @@ def _root_command(
         raise typer.Exit()
 
     if use_tool:
-        params = _parse_tool_params(tool_params)
+        params: Dict[str, str] = {}
+        for param in tool_params or []:
+            try:
+                key, value = param.split("=", 1)
+                params[key.strip()] = value.strip()
+            except ValueError:
+                _print_error(state, f"Invalid tool parameter format: {param}. Use key=value.")
+                raise typer.Exit(code=1)
+
         result = execute_tool(use_tool, **params)
         if result.get("success"):
             console.print("\n✓ Success:")
@@ -316,18 +369,22 @@ def _root_command(
         raise typer.Exit()
 
     if chat_mode:
-        _handle_chat_mode(state, backend, agent, chosen_model, generation_config, system_prompt)
+        _handle_chat_mode(state, backend, agent, chosen_model, generation_config, system_prompt, show_thinking)
     elif prompt_text:
-        _handle_single_prompt(state, backend, agent, chosen_model, generation_config, prompt_text, system_prompt)
+        _handle_single_prompt(
+            state,
+            backend,
+            agent,
+            chosen_model,
+            generation_config,
+            prompt_text,
+            system_prompt,
+            show_thinking,
+        )
     else:
         _print_error(state, "No action specified. Provide a prompt or use --chat")
         raise typer.Exit(code=1)
 
 
-def run():
-    """Entry point used by the console script."""
-    app()
-
-
 def main():  # pragma: no cover - console script wrapper
-    run()
+    app()

@@ -84,7 +84,7 @@ class AppConfig(BaseModel):
     """Top-level application configuration."""
 
     backend: BackendConfig = Field(default_factory=BackendConfig)
-    default_agent: str = "general"
+    default_agent: str = "penetration_testing"
     agents: Dict[str, AgentConfig] = Field(default_factory=_default_agents)
     mcp_servers: Dict[str, MCPServerConfig] = Field(default_factory=_default_mcp_servers)
     verbose: bool = False

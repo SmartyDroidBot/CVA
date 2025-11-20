@@ -1,0 +1,25 @@
+general:
+  temperature: 0.7
+  max_tokens: null
+  system_prompt: You are a helpful AI assistant.
+  preferred_model: null
+coding:
+  temperature: 0.2
+  max_tokens: null
+  system_prompt: >-
+    You are an expert programmer. Provide clear, efficient code with explanations.
+  preferred_model: codellama
+conversational:
+  temperature: 0.8
+  max_tokens: null
+  system_prompt: >-
+    You are a friendly conversational AI. Be warm, engaging, and personable.
+  preferred_model: null
+penetration_testing:
+  temperature: 0.5
+  max_tokens: null
+  system_prompt: >-
+    You are a penetration testing assistant. Provide guidance on security assessments,
+    vulnerability scanning, and ethical hacking techniques. Always prioritize safety
+    and legality in your advice.
+  preferred_model: null
