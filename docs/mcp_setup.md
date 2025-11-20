@@ -124,6 +124,8 @@ mcp_servers:
       BRAVE_API_KEY: "your_brave_api_key_here"
 ```
 
+> 🔌 When `type: sse`, the CLI will automatically run `command` + `args` before attempting to connect to `url`. Omit `command` if you're pointing at a hosted SSE endpoint that's already running.
+
 ### Option 3: Python MCP Servers
 
 You can also create Python-based MCP servers:
