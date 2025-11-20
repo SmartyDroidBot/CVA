@@ -6,7 +6,7 @@ A modular, extensible command-line interface for local Large Language Models wit
 
 - **Multiple Backends**: Support for Ollama and llama.cpp
 - **Agent System**: Different AI personas with customizable prompts and behaviors
-- **MCP Tool Integration**: Dynamic tool loading from MCP servers
+- **MCP Tool Integration**: Dynamic tool loading and automatic tool calls from MCP servers
 - **Built-in Tools**: File operations, math calculator, system commands
 - **Typer + Rich CLI**: Modern UX with colorized output, streaming, and contextual help
 - **Configuration System**: Pydantic-backed YAML/JSON config with validation and defaults
@@ -42,7 +42,7 @@ pip install -e .
 ### Basic Usage
 
 ```powershell
-# Initialize configuration (creates config/config.yaml by default)
+# Initialize configuration (creates config/config.yaml plus companion files)
 uv run llm --init-config
 
 # List available tools
@@ -68,13 +68,22 @@ uv run llm --list-models
 
 # Execute an MCP tool
 uv run llm --use-tool read_file --tool-params path=README.md
+
+# Ask the assistant to call MCP tools automatically
+uv run llm "Summarize README.md"  # LLM will emit a <<CALL_TOOL ...>> directive when needed
 ```
 
 ## Configuration
 
-By default, configuration lives in `config/config.yaml` within this repository. Pass `--config PATH` to store it elsewhere (e.g., `%APPDATA%\llm\config.yaml`). The manager will create a JSON file instead if PyYAML is unavailable.
+By default, configuration lives in the `config/` directory within this repository. Pass `--config PATH` to store the base config elsewhere (e.g., `%APPDATA%\llm\config.yaml`). The manager now keeps related data in three files so MCP settings and system prompts can evolve independently:
 
-Example config:
+| File | Purpose |
+| --- | --- |
+| `config/config.yaml` | Backend, defaults, and global flags |
+| `config/agents.yaml` | Agent definitions (temperatures, system prompts, preferred models) |
+| `config/mcp_servers.yaml` | MCP server definitions |
+
+Example `config/config.yaml`:
 
 ```yaml
 backend:
@@ -82,49 +91,52 @@ backend:
   url: http://localhost:11434
   default_model: qwen3:8b
   timeout: 120
-
 default_agent: general
-
-agents:
-  general:
-    temperature: 0.7
-    system_prompt: "You are a helpful AI assistant."
-  
-  coding:
-    temperature: 0.2
-    preferred_model: codellama
-    system_prompt: "You are an expert programmer."
-  
-  conversational:
-    temperature: 0.8
-    system_prompt: "You are a friendly conversational AI."
-
-mcp_servers:
-  filesystem:
-    type: stdio
-    command: python
-    args: ["-m", "local_llm_cli.mcp_servers.filesystem"]
-    enabled: false
-  
-  math:
-    type: stdio
-    command: python
-    args: ["-m", "local_llm_cli.mcp_servers.math"]
-    enabled: false
-  
-  system:
-    type: stdio
-    command: python
-    args: ["-m", "local_llm_cli.mcp_servers.system"]
-    enabled: false
-
 verbose: false
 color_output: true
 ```
 
+Example `config/agents.yaml`:
+
+```yaml
+general:
+  temperature: 0.7
+  system_prompt: "You are a helpful AI assistant."
+
+coding:
+  temperature: 0.2
+  preferred_model: codellama
+  system_prompt: "You are an expert programmer."
+
+conversational:
+  temperature: 0.8
+  system_prompt: "You are a friendly conversational AI."
+```
+
+Example `config/mcp_servers.yaml`:
+
+```yaml
+filesystem:
+  type: stdio
+  command: python
+  args: ["-m", "local_llm_cli.mcp_servers.filesystem"]
+  enabled: false
+
+math:
+  type: stdio
+  command: python
+  args: ["-m", "local_llm_cli.mcp_servers.math"]
+  enabled: false
+
+system:
+  type: stdio
+  command: python
+  args: ["-m", "local_llm_cli.mcp_servers.system"]
+  enabled: false
+```
+
 > 💡 **Tip:** Set `enabled: true` for any MCP server you want auto-started. You can also provide `url` and `headers` to connect to SSE-capable remote servers instead of spawning a local process.
->
-> For `type: sse` entries, supply `command` + `args` to let the CLI launch your proxy (e.g., Burp MCP bridge) automatically before connecting to the `url`. Leave `command` empty when you want to connect to an already-running remote service.
+
 
 ## Built-in MCP Servers
 
@@ -161,6 +173,16 @@ These Python reference servers ship with the project but remain disabled until y
 - **System Prompt**: Friendly, engaging conversational AI
 
 ## Advanced Usage
+
+### Automatic MCP Tool Calls
+
+During normal prompts or chat sessions the assistant can now invoke MCP tools on its own. To trigger a tool call, the model must emit a directive that looks like this:
+
+```
+<<CALL_TOOL tool_name {"argument": "value"}>>
+```
+
+When the CLI detects this pattern it will execute the requested MCP tool (up to three calls per response), stream the results back into the conversation, and then re-query the LLM so it can finish the answer with the new information. The tool catalog is still available via `--list-tools`, and you can execute a tool manually at any time with `--use-tool`.
 
 ### Custom MCP Servers
 

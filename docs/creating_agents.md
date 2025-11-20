@@ -42,16 +42,15 @@ This guide shows you how to create custom agents for the Local LLM CLI.
 
 ## Config-Only Tweaks
 
-Need to adjust temperature, `max_tokens`, or the system prompt without writing Python? Edit `config/config.yaml` under the `agents` section:
+Need to adjust temperature, `max_tokens`, or the system prompt without writing Python? Edit `config/agents.yaml`:
 
 ```yaml
-agents:
-    general:
-        temperature: 0.6
-        system_prompt: "One-line override"
-    my_agent:
-        temperature: 0.25
-        max_tokens: 2048
+general:
+    temperature: 0.6
+    system_prompt: "One-line override"
+my_agent:
+    temperature: 0.25
+    max_tokens: 2048
 ```
 
 These values are validated by Pydantic and automatically applied every time you call the agent.
