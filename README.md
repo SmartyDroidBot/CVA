@@ -123,6 +123,8 @@ color_output: true
 ```
 
 > 💡 **Tip:** Set `enabled: true` for any MCP server you want auto-started. You can also provide `url` and `headers` to connect to SSE-capable remote servers instead of spawning a local process.
+>
+> For `type: sse` entries, supply `command` + `args` to let the CLI launch your proxy (e.g., Burp MCP bridge) automatically before connecting to the `url`. Leave `command` empty when you want to connect to an already-running remote service.
 
 ## Built-in MCP Servers
 

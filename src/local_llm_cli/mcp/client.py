@@ -1,13 +1,14 @@
 """MCP (Model Context Protocol) client for tool integration"""
 
 import asyncio
-from pathlib import Path
-from typing import Any, Dict, List, Optional
+from asyncio.subprocess import DEVNULL, Process
 from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
 
+from httpx import HTTPStatusError
 from mcp import ClientSession, StdioServerParameters
-from mcp.client.stdio import stdio_client
 from mcp.client.sse import sse_client
+from mcp.client.stdio import stdio_client
 
 
 @dataclass
@@ -89,6 +90,7 @@ class MCPServerConnection:
         self._write = None
         self._initialized = False
         self._context_manager = None
+        self._process: Optional[Process] = None
     
     async def connect(self):
         """Connect to the MCP server"""
@@ -102,6 +104,12 @@ class MCPServerConnection:
                     print(f"Error: SSE connection requires URL for server {self.server_name}")
                     self._initialized = False
                     return
+
+                if self.command:
+                    launched = await self._launch_sse_process()
+                    if not launched:
+                        self._initialized = False
+                        return
                 
                 # Create SSE client with headers
                 sse_ctx = sse_client(self.url, headers=self.headers if self.headers else None)
@@ -115,12 +123,22 @@ class MCPServerConnection:
                 except asyncio.TimeoutError:
                     print(f"Timeout connecting to SSE MCP server {self.server_name} at {self.url}")
                     self._initialized = False
+                    await self._shutdown_process()
+                    return
+                except HTTPStatusError as exc:
+                    status = exc.response.status_code if exc.response else "unknown"
+                    self._print_http_error(status)
+                    self._initialized = False
+                    await self._shutdown_process()
                     return
                 except Exception as e:
-                    print(f"Error connecting to SSE server {self.server_name}: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    status = self._find_http_status(e)
+                    if status is not None:
+                        self._print_http_error(status)
+                    else:
+                        print(f"Error connecting to SSE server {self.server_name}: {e}")
                     self._initialized = False
+                    await self._shutdown_process()
                     return
             else:
                 # Stdio connection
@@ -184,7 +202,65 @@ class MCPServerConnection:
             except Exception:
                 pass
         
+        await self._shutdown_process()
         self._initialized = False
+
+    async def _launch_sse_process(self) -> bool:
+        """Launch a local SSE proxy/server if a command is provided."""
+        try:
+            self._process = await asyncio.create_subprocess_exec(
+                self.command,
+                *self.args,
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+            )
+            await asyncio.sleep(1.0)
+            return True
+        except FileNotFoundError:
+            print(
+                f"Error: Unable to launch SSE server '{self.server_name}'. Command not found: {self.command}"
+            )
+            return False
+        except Exception as exc:
+            print(
+                f"Error launching SSE server '{self.server_name}' via command '{self.command}': {exc}"
+            )
+            return False
+
+    async def _shutdown_process(self):
+        """Best-effort shutdown for launched SSE processes."""
+        if not self._process:
+            return
+        try:
+            if self._process.returncode is None:
+                self._process.terminate()
+                try:
+                    await asyncio.wait_for(self._process.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    self._process.kill()
+        finally:
+            self._process = None
+
+    def _find_http_status(self, exc: BaseException) -> Optional[int]:
+        """Walk nested ExceptionGroups to find an HTTP status error code."""
+        if isinstance(exc, HTTPStatusError):
+            return exc.response.status_code if exc.response else None
+
+        nested = getattr(exc, "exceptions", None)
+        if not nested:
+            return None
+
+        for inner in nested:
+            status = self._find_http_status(inner)
+            if status is not None:
+                return status
+        return None
+
+    def _print_http_error(self, status: int | str):
+        print(
+            f"Error connecting to SSE server {self.server_name}: HTTP {status} from {self.url}."
+        )
+        print("Ensure the MCP proxy/server is running or disable it in your config.")
     
     async def list_tools(self) -> List[MCPTool]:
         """List all available tools from this server"""
