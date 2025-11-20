@@ -40,37 +40,40 @@ ollama pull codellama
 ollama list
 ```
 
-### 4. Test the CLI
+### 4. Initialize and Test the CLI
 
 ```powershell
+# Write config/config.yaml (or .json if PyYAML is unavailable)
+uv run llm --init-config
+
 # Test basic prompt
-uv run local_llm_cli.py "Hello, who are you?"
+uv run llm "Hello, who are you?"
 
 # Test chat mode
-uv run local_llm_cli.py --chat
+uv run llm --chat
 ```
 
 ## Quick Start Examples
 
 ### Example 1: Ask a Question
 ```powershell
-uv run local_llm_cli.py "What is the difference between Python and JavaScript?"
+uv run llm "What is the difference between Python and JavaScript?"
 ```
 
 ### Example 2: Start a Conversation
 ```powershell
-uv run local_llm_cli.py --chat
+uv run llm --chat
 ```
 Then type your questions. Type `exit` to quit.
 
 ### Example 3: Get Help with Code
 ```powershell
-uv run local_llm_cli.py "Write a Python function that calculates fibonacci numbers"
+uv run llm "Write a Python function that calculates fibonacci numbers"
 ```
 
 ### Example 4: Summarize a File
 ```powershell
-Get-Content README.md | uv run local_llm_cli.py "Summarize this document in 3 sentences"
+Get-Content README.md | uv run llm
 ```
 
 ## Making it Easier to Use
@@ -97,8 +100,8 @@ notepad $PROFILE
 
 Add these functions:
 ```powershell
-function llm { uv run --directory d:\Projects\CVA local_llm_cli.py $args }
-function chat { uv run --directory d:\Projects\CVA local_llm_cli.py --chat }
+function llm { uv run --directory d:\Projects\CVA llm $args }
+function chat { uv run --directory d:\Projects\CVA llm --chat $args }
 ```
 
 Save and reload:
@@ -139,30 +142,30 @@ ollama pull <model-name>
 ## Troubleshooting
 
 ### Issue: "Cannot connect to Ollama"
-**Solution**: Make sure Ollama is running
+**Solution**: Make sure Ollama is running.
 ```powershell
 ollama serve
 ```
 
 ### Issue: "Model not found"
-**Solution**: Pull the model first
+**Solution**: Pull the model first, then list available ones.
 ```powershell
 ollama pull llama2
-uv run local_llm_cli.py --list-models
+uv run llm --list-models
 ```
 
 ### Issue: Slow responses
-**Solution**: Use a smaller model
+**Solution**: Use a smaller model or override per-call settings.
 ```powershell
 ollama pull phi
-uv run local_llm_cli.py --model phi "Your question"
+uv run llm --model phi "Answer quickly"
 ```
 
 ## Next Steps
 
 1. Try different models to find what works best
 2. Set up aliases for faster access
-3. Integrate with your development workflow
-4. Explore chat mode for interactive sessions
+3. Enable MCP servers and run `uv run llm --list-tools`
+4. Explore chat mode for multi-turn workflows
 
 Enjoy your local, private AI assistant!

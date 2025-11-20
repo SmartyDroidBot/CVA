@@ -14,10 +14,10 @@ def get_mcp_manager() -> MCPManager:
     return _mcp_manager
 
 
-def add_mcp_server(server_name: str, command: str, args: list = None) -> bool:
+def add_mcp_server(server_name: str, command: str, args: list = None, connection_type: str = "stdio", url: str = None, headers: dict = None) -> bool:
     """Add an MCP server to the global manager"""
     manager = get_mcp_manager()
-    return manager.add_server(server_name, command, args or [])
+    return manager.add_server(server_name, command, args or [], connection_type, url, headers)
 
 
 def get_mcp_tools() -> list:

@@ -30,6 +30,16 @@ class GenerationConfig:
     max_tokens: Optional[int] = None
     stop_sequences: Optional[List[str]] = None
     stream: bool = True
+    timeout: int = 120
+
+
+@dataclass
+class GenerationResponse:
+    """Response from text generation"""
+    content: str
+    model: str
+    usage: Optional[Dict[str, int]] = None  # Token usage statistics
+    finish_reason: Optional[str] = None  # 'stop', 'length', etc.
 
 
 class LLMBackend(ABC):
@@ -44,20 +54,20 @@ class LLMBackend(ABC):
     @abstractmethod
     def generate(
         self,
-        prompt: str,
-        system: Optional[str] = None,
+        model: str,
+        messages: List[Message],
         config: Optional[GenerationConfig] = None
-    ) -> str:
+    ) -> GenerationResponse:
         """
-        Generate a response from a prompt.
+        Generate a response from messages.
         
         Args:
-            prompt: The input prompt
-            system: Optional system prompt
+            model: The model name to use
+            messages: List of conversation messages
             config: Generation configuration
             
         Returns:
-            Generated text response
+            GenerationResponse with content and metadata
         """
         pass
     

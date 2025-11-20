@@ -1,465 +1,333 @@
-"""Main CLI interface"""
+"""Typer-powered CLI entry point"""
 
-import argparse
+from __future__ import annotations
+
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
-from ..backends import get_backend, list_backends, GenerationConfig
+import typer
+from rich.console import Console
+
 from ..agents import get_agent, list_agents
-from ..mcp import get_mcp_manager, add_mcp_server, get_mcp_tools, get_tool, execute_tool
+from ..backends import GenerationConfig, Message, get_backend, list_backends
+from ..config import AppConfig, ConfigManager, save_config
+from ..mcp import execute_tool, get_mcp_manager, get_mcp_tools, get_tool
 
 
-def print_error(message: str):
-    """Print error message to stderr"""
-    print(f"Error: {message}", file=sys.stderr)
+app = typer.Typer(add_completion=False, no_args_is_help=False)
 
 
-def print_info(message: str):
-    """Print info message"""
-    print(message, file=sys.stderr)
+@dataclass
+class RuntimeState:
+    config_manager: ConfigManager
+    config: AppConfig
+    console: Console = field(default_factory=Console)
+    mcp_initialized: bool = False
 
 
-def handle_list_models(backend):
-    """Handle --list-models command"""
+def _build_console(config: AppConfig) -> Console:
+    color_system = "auto" if config.color_output else None
+    return Console(color_system=color_system)
+
+
+def _get_state(ctx: typer.Context) -> RuntimeState:
+    state = ctx.obj
+    if not isinstance(state, RuntimeState):
+        raise RuntimeError("Runtime state has not been initialized")
+    return state
+
+
+def _initialize_mcp_servers(config: AppConfig):
+    manager = get_mcp_manager()
+    for server_name, server_config in config.mcp_servers.items():
+        if not server_config.enabled:
+            continue
+        success = manager.add_server(
+            server_name=server_name,
+            command=server_config.command,
+            args=server_config.args,
+            connection_type=server_config.type,
+            url=server_config.url,
+            headers=server_config.headers,
+        )
+        if not success and config.verbose:
+            print(f"Warning: Failed to load MCP server: {server_name}", file=sys.stderr)
+
+
+def _ensure_mcp(state: RuntimeState):
+    if state.mcp_initialized:
+        return
+    _initialize_mcp_servers(state.config)
+    state.mcp_initialized = True
+
+
+def _print_error(state: RuntimeState, message: str):
+    state.console.print(f"[bold red]Error:[/bold red] {message}", file=sys.stderr)
+
+
+def _handle_list_models(state: RuntimeState, backend):
     try:
         models = backend.list_models()
-        if models:
-            print("Available models:")
-            for model in models:
-                size_info = ""
-                if model.size:
-                    size_gb = model.size / (1024**3)
-                    size_info = f" ({size_gb:.2f} GB)"
-                desc_info = f" - {model.description}" if model.description else ""
-                print(f"  - {model.name}{size_info}{desc_info}")
-        else:
-            print("No models found or listing not supported for this backend")
-    except Exception as e:
-        print_error(f"Failed to list models: {e}")
-        sys.exit(1)
+        if not models:
+            state.console.print("No models found or listing not supported for this backend")
+            return
+        state.console.print("Available models:")
+        for model in models:
+            size_info = f" ({model.size / (1024**3):.2f} GB)" if model.size else ""
+            desc_info = f" - {model.description}" if model.description else ""
+            state.console.print(f"  - {model.name}{size_info}{desc_info}")
+    except Exception as exc:  # pragma: no cover - backend errors
+        _print_error(state, f"Failed to list models: {exc}")
+        raise typer.Exit(code=1)
 
 
-def handle_chat_mode(backend, args):
-    """Handle interactive chat mode"""
-    # Get agent if specified
-    agent = None
-    if hasattr(args, 'agent') and args.agent:
+def _handle_chat_mode(state: RuntimeState, backend, agent, model: str, config: GenerationConfig, system_override: Optional[str]):
+    console = state.console
+    console.print(f"[info]Starting chat mode with model: {model}")
+    console.print(f"[info]Using agent: {agent.config.name}")
+    console.print("Type 'exit'/'quit' to end, 'clear' to reset conversation")
+    console.print("=" * 50)
+
+    conversation: List[Message] = []
+    system_prompt = system_override or agent.config.system_prompt
+    if system_prompt:
+        conversation.append(Message(role="system", content=system_prompt))
+
+    while True:
         try:
-            agent = get_agent(args.agent)
-            print(f"Agent: {agent.name} - {agent.description}")
-        except ValueError as e:
-            print_error(str(e))
-            sys.exit(1)
-    
-    print(f"Local LLM Chat (backend: {backend.backend_name}, model: {backend.model})")
-    print("Type 'exit', 'quit', or Ctrl+C to exit")
-    print("Type '/clear' to clear conversation history")
-    if agent:
-        print("Type '/agent <name>' to switch agents")
-        print("Type '/agents' to list available agents")
-    print("-" * 50)
-    
-    # Use agent's config if available
-    if agent:
-        config = agent.get_generation_config()
-        config.stream = not args.no_stream
-        system_prompt = agent.get_system_prompt()
-    else:
-        config = GenerationConfig(
-            stream=not args.no_stream,
-            temperature=args.temperature if hasattr(args, 'temperature') else 0.7
-        )
-        system_prompt = args.system if hasattr(args, 'system') else None
-    
+            user_input = input("You: ").strip()
+        except (KeyboardInterrupt, EOFError):
+            console.print("\nGoodbye!")
+            break
+
+        if not user_input:
+            continue
+        if user_input.lower() in {"exit", "quit"}:
+            console.print("\nGoodbye!")
+            break
+        if user_input.lower() == "clear":
+            conversation = []
+            if system_prompt:
+                conversation.append(Message(role="system", content=system_prompt))
+            console.print("\nConversation cleared.\n")
+            continue
+
+        conversation.append(Message(role="user", content=user_input))
+        console.print("\nAssistant: ", end="", flush=True)
+        try:
+            response = backend.generate(model=model, messages=conversation, config=config)
+        except Exception as exc:  # pragma: no cover - backend error path
+            console.print(f"\nError: {exc}\n")
+            conversation.pop()
+            continue
+
+        console.print(response.content)
+        conversation.append(Message(role="assistant", content=response.content))
+
+
+def _handle_single_prompt(state: RuntimeState, backend, agent, model: str, config: GenerationConfig, prompt: str, system_override: Optional[str]):
+    console = state.console
+    system_prompt = system_override or agent.config.system_prompt
+    conversation = []
+    if system_prompt:
+        conversation.append(Message(role="system", content=system_prompt))
+    conversation.append(Message(role="user", content=prompt))
     try:
-        while True:
-            try:
-                user_input = input("\nYou: ").strip()
-                
-                if user_input.lower() in ["exit", "quit"]:
-                    print("Goodbye!")
-                    break
-                
-                if user_input == "/clear":
-                    backend.clear_history()
-                    print("Conversation history cleared.")
-                    continue
-                
-                if user_input.startswith("/agent "):
-                    new_agent_name = user_input[7:].strip()
-                    try:
-                        agent = get_agent(new_agent_name)
-                        config = agent.get_generation_config()
-                        config.stream = not args.no_stream
-                        system_prompt = agent.get_system_prompt()
-                        backend.clear_history()  # Clear history when switching agents
-                        print(f"Switched to agent: {agent.name} - {agent.description}")
-                    except ValueError as e:
-                        print_error(str(e))
-                    continue
-                
-                if user_input == "/agents":
-                    print("\nAvailable agents:")
-                    for name, description in list_agents():
-                        marker = " (current)" if agent and agent.name == name else ""
-                        print(f"  {name}: {description}{marker}")
-                    continue
-                
-                if not user_input:
-                    continue
-                
-                # Preprocess input if using agent
-                if agent:
-                    user_input = agent.preprocess_input(user_input)
-                
-                print("\nAssistant: ", end="", flush=True)
-                
-                if config.stream:
-                    response_text = ""
-                    for chunk in backend.chat_stream(user_input, system=system_prompt, config=config):
-                        print(chunk, end="", flush=True)
-                        response_text += chunk
-                    print()  # New line after streaming
-                    
-                    # Postprocess output if using agent
-                    if agent:
-                        response_text = agent.postprocess_output(response_text)
-                else:
-                    response = backend.chat(user_input, system=system_prompt, config=config)
-                    
-                    # Postprocess output if using agent
-                    if agent:
-                        response = agent.postprocess_output(response)
-                    
-                    print(response)
-                
-            except EOFError:
-                print("\nGoodbye!")
-                break
-    except KeyboardInterrupt:
-        print("\n\nGoodbye!")
+        response = backend.generate(model=model, messages=conversation, config=config)
+    except Exception as exc:
+        _print_error(state, str(exc))
+        raise typer.Exit(code=1)
+    console.print("\n" + "=" * 50)
+    console.print(response.content)
+    console.print("=" * 50 + "\n")
+    if response.usage:
+        total = response.usage.get("total_tokens", "N/A")
+        console.print(f"[info]Tokens used: {total}")
 
 
-def handle_single_prompt(backend, prompt, args):
-    """Handle single prompt generation"""
-    # Get agent if specified
-    agent = None
-    if hasattr(args, 'agent') and args.agent:
-        try:
-            agent = get_agent(args.agent)
-        except ValueError as e:
-            print_error(str(e))
-            sys.exit(1)
-    
-    # Use agent's config if available
-    if agent:
-        config = agent.get_generation_config()
-        config.stream = not args.no_stream
-        system_prompt = agent.get_system_prompt()
-        prompt = agent.preprocess_input(prompt)
-    else:
-        config = GenerationConfig(
-            stream=not args.no_stream,
-            temperature=args.temperature if hasattr(args, 'temperature') else 0.7
-        )
-        system_prompt = args.system if hasattr(args, 'system') else None
-    
-    try:
-        if config.stream:
-            response_text = ""
-            for chunk in backend.generate_stream(prompt, system=system_prompt, config=config):
-                print(chunk, end="", flush=True)
-                response_text += chunk
-            print()  # New line after streaming
-            
-            if agent:
-                response_text = agent.postprocess_output(response_text)
+def _parse_tool_params(param_items: Optional[List[str]]) -> Dict[str, str]:
+    if not param_items:
+        return {}
+    params: Dict[str, str] = {}
+    for item in param_items:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        params[key] = value
+    return params
+
+
+@app.callback(invoke_without_command=True)
+def _root_command(
+    ctx: typer.Context,
+    prompt: Optional[List[str]] = typer.Argument(None, help="Prompt to execute"),
+    config: Optional[Path] = typer.Option(None, "--config", help="Path to configuration file"),
+    init_config: bool = typer.Option(False, "--init-config", help="Initialize default configuration"),
+    backend_name: Optional[str] = typer.Option(None, "--backend", "-b", help="Backend to use"),
+    url: Optional[str] = typer.Option(None, "--url", help="Backend URL"),
+    model: Optional[str] = typer.Option(None, "--model", help="Model name"),
+    agent_name: Optional[str] = typer.Option(None, "--agent", "-a", help="Agent to use"),
+    temperature: Optional[float] = typer.Option(None, "--temperature", "-t", help="Sampling temperature"),
+    max_tokens: Optional[int] = typer.Option(None, "--max-tokens", help="Maximum tokens to generate"),
+    no_stream: bool = typer.Option(False, "--no-stream", help="Disable streaming output"),
+    chat_mode: bool = typer.Option(False, "--chat", "-c", help="Interactive chat mode"),
+    prompt_file: Optional[Path] = typer.Option(None, "--file", "-f", help="Read prompt from file"),
+    list_models: bool = typer.Option(False, "--list-models", "-l", help="List available models"),
+    list_backends_flag: bool = typer.Option(False, "--list-backends", help="List available backends"),
+    list_agents_flag: bool = typer.Option(False, "--list-agents", help="List available agents"),
+    list_tools_flag: bool = typer.Option(False, "--list-tools", help="List available MCP tools"),
+    tool_info: Optional[str] = typer.Option(None, "--tool-info", help="Show info about a specific tool"),
+    use_tool: Optional[str] = typer.Option(None, "--use-tool", help="Execute a tool"),
+    tool_params: Optional[List[str]] = typer.Option(None, "--tool-params", help="Tool parameters key=value"),
+    system_prompt: Optional[str] = typer.Option(None, "--system", help="Override system prompt"),
+    verbose: bool = typer.Option(False, "--verbose", help="Enable verbose output"),
+):
+    manager = ConfigManager(config)
+    app_config = manager.load()
+    if verbose:
+        app_config.verbose = True
+    console = _build_console(app_config)
+    state = RuntimeState(config_manager=manager, config=app_config, console=console)
+    ctx.obj = state
+
+    if init_config:
+        default_config = AppConfig.default()
+        if save_config(default_config, manager.config_path):
+            console.print(f"Configuration initialized at: {manager.config_path}")
         else:
-            response = backend.generate(prompt, system=system_prompt, config=config)
-            
-            if agent:
-                response = agent.postprocess_output(response)
-            
-            print(response)
-    except Exception as e:
-        print_error(str(e))
-        sys.exit(1)
+            _print_error(state, "Failed to initialize configuration")
+        raise typer.Exit()
 
+    if list_backends_flag:
+        console.print("Available backends:")
+        for name in list_backends():
+            console.print(f"  - {name}")
+        raise typer.Exit()
 
-def get_prompt_from_sources(args) -> Optional[str]:
-    """Get prompt from various sources (args, file, stdin)"""
-    prompt = None
-    
-    # Try file first
-    if args.file:
+    if list_agents_flag:
+        console.print("Available agents:")
+        for item in list_agents() or []:
+            if isinstance(item, tuple):
+                console.print(f"  {item[0]}: {item[1]}")
+            else:
+                console.print(f"  {item}")
+        raise typer.Exit()
+
+    if list_tools_flag or tool_info or use_tool:
+        _ensure_mcp(state)
+
+    if list_tools_flag:
+        console.print("Available tools from MCP servers:")
+        tools = get_mcp_tools()
+        if not tools:
+            console.print("  No tools available")
+        else:
+            grouped: Dict[str, List] = {}
+            for tool in tools:
+                grouped.setdefault(tool.server_name, []).append(tool)
+            for server_name, server_tools in sorted(grouped.items()):
+                console.print(f"\n  Server: {server_name}")
+                for tool in server_tools:
+                    console.print(f"    {tool.name:20s} - {tool.description}")
+        raise typer.Exit()
+
+    if tool_info:
+        tool_wrapper = get_tool(tool_info)
+        if not tool_wrapper:
+            _print_error(state, f"Tool '{tool_info}' not found")
+            raise typer.Exit(code=1)
+        tool = tool_wrapper.tool
+        console.print(f"Tool: {tool.name}")
+        console.print(f"Server: {tool.server_name}")
+        console.print(f"Description: {tool.description}")
+        params = tool.get_parameters()
+        console.print("\nParameters:")
+        if not params:
+            console.print("  (none)")
+        else:
+            for param in params:
+                required = " (required)" if param.get("required") else ""
+                default = (
+                    f" [default: {param.get('default')}]" if param.get("default") is not None else ""
+                )
+                console.print(f"  {param['name']:15s} ({param['type']}){required}{default}")
+                if param.get("description"):
+                    console.print(f"    {param['description']}")
+        raise typer.Exit()
+
+    if use_tool:
+        params = _parse_tool_params(tool_params)
+        result = execute_tool(use_tool, **params)
+        if result.get("success"):
+            console.print("\n✓ Success:")
+            if output := result.get("output"):
+                console.print(output)
+            metadata = result.get("metadata")
+            if metadata:
+                console.print(f"\nMetadata: {metadata}")
+        else:
+            _print_error(state, result.get("error", "Tool execution failed"))
+            raise typer.Exit(code=1)
+        raise typer.Exit()
+
+    prompt_text: Optional[str] = None
+    if prompt_file:
         try:
-            prompt = args.file.read_text()
-        except Exception as e:
-            print_error(f"Failed to read file: {e}")
-            sys.exit(1)
-    # Then command line args
-    elif args.prompt:
-        prompt = " ".join(args.prompt)
-    # Finally stdin/pipe
+            prompt_text = prompt_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            _print_error(state, f"Failed to read file: {exc}")
+            raise typer.Exit(code=1)
+    elif prompt:
+        prompt_text = " ".join(prompt)
     elif not sys.stdin.isatty():
-        prompt = sys.stdin.read().strip()
-    
-    return prompt
+        prompt_text = sys.stdin.read().strip()
 
+    if not prompt_text and not chat_mode:
+        chat_mode = True
 
-def handle_list_agents():
-    """Handle --list-agents command"""
-    print("Available agents:")
-    for name, description in list_agents():
-        print(f"  {name:20s} - {description}")
-
-
-def handle_list_tools():
-    """Handle --list-tools command"""
-    print("Available tools from MCP servers:")
-    tools = get_mcp_tools()
-    
-    if not tools:
-        print("  No tools available.")
-        print("  Built-in MCP servers should provide file, math, and system tools.")
-        return
-    
-    # Group by server
-    by_server = {}
-    for tool in tools:
-        server_name = tool.server_name
-        if server_name not in by_server:
-            by_server[server_name] = []
-        by_server[server_name].append(tool)
-    
-    for server_name, server_tools in sorted(by_server.items()):
-        print(f"\n  Server: {server_name}")
-        for tool in server_tools:
-            print(f"    {tool.name:20s} - {tool.description}")
-
-
-def handle_use_tool(args):
-    """Handle --use-tool command"""
-    tool_name = args.use_tool
-    
-    tool = get_tool(tool_name)
-    if not tool:
-        print_error(f"Tool not found: {tool_name}")
-        print_info("Use --list-tools to see available tools")
-        sys.exit(1)
-    
-    # Show tool info
-    print(f"Tool: {tool.name}")
-    print(f"Description: {tool.description}")
-    print(f"Category: {tool.category.value}")
-    print("\nParameters:")
-    for param in tool.parameters:
-        required = "required" if param.required else "optional"
-        default = f" (default: {param.default})" if param.default is not None else ""
-        print(f"  {param.name} ({param.type}, {required}){default}")
-        print(f"    {param.description}")
-    
-    # Parse tool parameters from remaining args
-    tool_params = {}
-    if args.tool_params:
-        for param_str in args.tool_params:
-            if "=" in param_str:
-                key, value = param_str.split("=", 1)
-                tool_params[key] = value
-    
-    if tool_params or not tool.parameters:
-        print(f"\nExecuting with parameters: {tool_params}")
-        result = execute_tool(tool_name, **tool_params)
-        
-        if result.success:
-            print(f"\n✓ Success:")
-            print(result.data)
-            if result.metadata:
-                print(f"\nMetadata: {result.metadata}")
-        else:
-            print_error(f"Tool execution failed: {result.error}")
-            sys.exit(1)
-    else:
-        print("\nTo execute, provide parameters: --use-tool TOOL param1=value1 param2=value2")
-
-
-def create_parser() -> argparse.ArgumentParser:
-    """Create argument parser"""
-    parser = argparse.ArgumentParser(
-        description="Local LLM CLI - Interact with local language models",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Simple prompt
-  llm "What is the capital of France?"
-  
-  # Interactive chat mode
-  llm --chat
-  
-  # Use an agent
-  llm --agent coding "Write a Python function to sort a list"
-  llm --agent creative "Write a short poem about the ocean"
-  
-  # Chat with an agent
-  llm --chat --agent teacher
-  
-  # Use specific model
-  llm --model llama2 "Explain quantum computing"
-  
-  # List available agents
-  llm --list-agents
-  
-  # List available models
-  llm --list-models
-  
-  # Use different backend
-  llm --backend llama.cpp "Hello!"
-        """
-    )
-    
-    # Positional arguments
-    parser.add_argument("prompt", nargs="*", help="Prompt to send to the LLM")
-    
-    # Backend options
-    parser.add_argument("--model", "-m", help="Model to use")
-    parser.add_argument(
-        "--backend", "-b",
-        default="ollama",
-        help=f"Backend to use (available: {', '.join(list_backends())})"
-    )
-    parser.add_argument("--base-url", help="Base URL for the backend API")
-    
-    # Agent options
-    parser.add_argument("--agent", "-a", help="Agent to use (e.g., coding, creative, teacher)")
-    parser.add_argument("--list-agents", action="store_true", help="List available agents")
-    
-    # Tool options
-    parser.add_argument("--list-tools", action="store_true", help="List available tools")
-    parser.add_argument("--use-tool", help="Use a specific tool")
-    parser.add_argument("--tool-params", nargs="*", help="Tool parameters (key=value)")
-    
-    # Mode options
-    parser.add_argument("--chat", "-c", action="store_true", help="Start interactive chat mode")
-    parser.add_argument("--list-models", "-l", action="store_true", help="List available models")
-    
-    # Input options
-    parser.add_argument("--file", "-f", type=Path, help="Read prompt from file")
-    parser.add_argument("--system", "-s", help="System prompt (overrides agent's system prompt)")
-    
-    # Generation options
-    parser.add_argument("--no-stream", action="store_true", help="Disable streaming output")
-    parser.add_argument("--temperature", "-t", type=float, default=0.7, help="Temperature (0.0-2.0)")
-    
-    return parser
-
-
-def initialize_mcp_servers(config_file: Optional[Path] = None):
-    """Initialize MCP servers from configuration"""
-    mcp_manager = get_mcp_manager()
-    
-    # Get the path to built-in MCP servers
-    mcp_servers_dir = Path(__file__).parent.parent / "mcp_servers"
-    
-    # Add built-in MCP servers
-    builtin_servers = {
-        "filesystem": mcp_servers_dir / "filesystem.py",
-        "math": mcp_servers_dir / "math.py",
-        "system": mcp_servers_dir / "system.py",
-    }
-    
-    for server_name, server_path in builtin_servers.items():
-        if server_path.exists():
-            success = mcp_manager.add_server(
-                server_name=server_name,
-                command=sys.executable,  # Use current Python interpreter
-                args=[str(server_path)]
-            )
-            if not success:
-                print_info(f"Warning: Failed to load built-in MCP server: {server_name}")
-    
-    # TODO: In Phase 4, also load user-configured MCP servers from config file
-    
-    return mcp_manager
-
-
-def load_mcp_tools():
-    """Load tools from connected MCP servers"""
-    # Tools are now accessed directly from MCP manager
-    # No need for a separate registry
-    pass
-
-
-def main():
-    """Main entry point"""
-    parser = create_parser()
-    args = parser.parse_args()
-    
-    # Initialize MCP servers and load tools
-    initialize_mcp_servers()
-    load_mcp_tools()
-    
-    # Initialize backend
+    agent_id = agent_name or state.config.default_agent
     try:
-        backend = get_backend(
-            backend_name=args.backend,
-            model=args.model,
-            base_url=args.base_url
-        )
-    except ValueError as e:
-        print_error(str(e))
-        sys.exit(1)
-    
-    # Check backend health
-    if not backend.health_check():
-        print_error(f"Cannot connect to {backend.backend_name} at {backend.base_url}")
-        if backend.backend_name == "ollama":
-            print_info("Make sure Ollama is running: ollama serve")
-        sys.exit(1)
-    
-    # Verify model exists (for non-list commands)
-    if not args.list_models and backend.backend_name == "ollama":
-        try:
-            available_models = [m.name for m in backend.list_models()]
-            if available_models and backend.model not in available_models:
-                print_error(f"Model '{backend.model}' not found.")
-                print_info(f"Available models: {', '.join(available_models)}")
-                print_info(f"Pull it with: ollama pull {backend.model}")
-                sys.exit(1)
-        except:
-            pass  # If we can't check, proceed anyway
-    
-    # Handle commands
-    if args.list_agents:
-        handle_list_agents()
-        return
-    
-    if args.list_tools:
-        handle_list_tools()
-        return
-    
-    if args.use_tool:
-        handle_use_tool(args)
-        return
-    
-    if args.list_models:
-        handle_list_models(backend)
-        return
-    
-    if args.chat:
-        handle_chat_mode(backend, args)
-        return
-    
-    # Get prompt for single generation
-    prompt = get_prompt_from_sources(args)
-    
-    if not prompt:
-        parser.print_help()
-        sys.exit(1)
-    
-    # Generate response
-    handle_single_prompt(backend, prompt, args)
+        agent = get_agent(agent_id)
+    except Exception as exc:
+        _print_error(state, str(exc))
+        raise typer.Exit(code=1)
+
+    agent_cfg = state.config.agents.get(agent_id)
+    backend_type = backend_name or state.config.backend.type
+    backend_url = url or state.config.backend.url
+    chosen_model = (
+        model
+        or (agent_cfg.preferred_model if agent_cfg and agent_cfg.preferred_model else None)
+        or state.config.backend.default_model
+    )
+
+    backend = get_backend(backend_type, model=chosen_model, base_url=backend_url)
+
+    generation_config = GenerationConfig(
+        temperature=temperature or (agent_cfg.temperature if agent_cfg else 0.7),
+        max_tokens=max_tokens or (agent_cfg.max_tokens if agent_cfg else None),
+        stream=not no_stream,
+    )
+
+    if list_models:
+        _handle_list_models(state, backend)
+        raise typer.Exit()
+
+    if chat_mode:
+        _handle_chat_mode(state, backend, agent, chosen_model, generation_config, system_prompt)
+    elif prompt_text:
+        _handle_single_prompt(state, backend, agent, chosen_model, generation_config, prompt_text, system_prompt)
+    else:
+        _print_error(state, "No action specified. Provide a prompt or use --chat")
+        raise typer.Exit(code=1)
 
 
-if __name__ == "__main__":
-    main()
+def run():
+    """Entry point used by the console script."""
+    app()
+
+
+def main():  # pragma: no cover - console script wrapper
+    run()

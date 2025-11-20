@@ -140,7 +140,17 @@ async def shell_command(arguments: dict) -> list[TextContent]:
 
 def main():
     """Run the MCP server"""
-    asyncio.run(stdio_server(app))
+    import asyncio
+    
+    async def run():
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
+    
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
