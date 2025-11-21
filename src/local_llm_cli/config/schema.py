@@ -74,6 +74,7 @@ class MCPServerConfig(BaseModel):
 class AgentConfig(BaseModel):
     """Agent configuration."""
 
+    description: str = "A helpful AI assistant"
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     system_prompt: Optional[str] = None
