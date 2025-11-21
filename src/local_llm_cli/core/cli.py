@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -10,14 +11,19 @@ from typing import Dict, List, Optional
 import typer
 from rich.console import Console
 
-from ..agents import get_agent, list_agents
+from ..agents import get_agent, list_agents, register_config
+from ..agents.base import AgentConfig as RuntimeAgentConfig
 from ..backends import GenerationConfig, Message, get_backend, list_backends
 from ..config import AppConfig, ConfigManager, save_config
 from ..mcp import add_mcp_server, execute_tool, get_mcp_tools, get_tool
 from ..mcp.tool_runtime import augment_system_prompt, process_response_with_tools
 
 
-app = typer.Typer(add_completion=False, no_args_is_help=False)
+app = typer.Typer(
+    add_completion=False, 
+    no_args_is_help=False,
+    context_settings={"allow_interspersed_args": True}
+)
 
 
 @dataclass
@@ -148,9 +154,7 @@ def _handle_chat_mode(
         )
 
         if not show_thinking:
-            output_text = "".join(
-                line for line in output_text.splitlines(keepends=True) if not line.strip().startswith("<think>")
-            )
+            output_text = re.sub(r"<think>.*?</think>", "", output_text, flags=re.DOTALL).strip()
 
         console.print(output_text)
 
@@ -191,9 +195,7 @@ def _handle_single_prompt(
     )
 
     if not show_thinking:
-        output_text = "".join(
-            line for line in output_text.splitlines(keepends=True) if not line.strip().startswith("<think>")
-        )
+        output_text = re.sub(r"<think>.*?</think>", "", output_text, flags=re.DOTALL).strip()
 
     console.print("\n" + "=" * 50)
     console.print(output_text)
@@ -206,7 +208,7 @@ def _handle_single_prompt(
 @app.callback(invoke_without_command=True)
 def _root_command(
     ctx: typer.Context,
-    prompt: Optional[List[str]] = typer.Argument(None, help="Prompt to execute"),
+    prompt: Optional[str] = typer.Argument(None, help="Prompt to execute"),
     config: Optional[Path] = typer.Option(None, "--config", help="Path to configuration file"),
     init_config: bool = typer.Option(False, "--init-config", help="Initialize default configuration"),
     backend_name: Optional[str] = typer.Option(None, "--backend", "-b", help="Backend to use"),
@@ -233,6 +235,19 @@ def _root_command(
     app_config = manager.load()
     if verbose:
         app_config.verbose = True
+
+    # Register agents from config
+    for name, cfg in app_config.agents.items():
+        runtime_config = RuntimeAgentConfig(
+            name=name,
+            description=cfg.description,
+            system_prompt=cfg.system_prompt or "",
+            temperature=cfg.temperature,
+            max_tokens=cfg.max_tokens,
+            preferred_model=cfg.preferred_model
+        )
+        register_config(runtime_config)
+
     console = _build_console(app_config)
     state = RuntimeState(config_manager=manager, config=app_config, console=console)
     ctx.obj = state
@@ -333,7 +348,7 @@ def _root_command(
             _print_error(state, f"Failed to read file: {exc}")
             raise typer.Exit(code=1)
     elif prompt:
-        prompt_text = " ".join(prompt)
+        prompt_text = prompt
     elif not sys.stdin.isatty():
         prompt_text = sys.stdin.read().strip()
 

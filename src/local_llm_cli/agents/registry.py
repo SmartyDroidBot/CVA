@@ -60,7 +60,8 @@ class AgentRegistry:
         
         # Check if config exists (built-in)
         if name in self._configs:
-            agent = create_builtin_agent(name)
+            config = self._configs[name]
+            agent = SimpleAgent(config, agent_type=name)
             self._agents[name] = agent
             return agent
         

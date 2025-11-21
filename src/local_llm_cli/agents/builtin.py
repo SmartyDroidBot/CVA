@@ -8,11 +8,7 @@ from .builtin_agents import general, coding, conversational
 
 
 # Registry of built-in agents
-BUILTIN_AGENTS: Dict[str, AgentConfig] = {
-    "general": general.AGENT_CONFIG,
-    "coding": coding.AGENT_CONFIG,
-    "conversational": conversational.AGENT_CONFIG,
-}
+BUILTIN_AGENTS: Dict[str, AgentConfig] = {}
 
 
 def create_builtin_agent(agent_name: str) -> SimpleAgent:

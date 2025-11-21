@@ -27,4 +27,4 @@ burp:
     - --sse-url
     - http://127.0.0.1:9876
   env: null
-  enabled: true
+  enabled: false
