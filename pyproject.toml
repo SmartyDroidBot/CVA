@@ -1,5 +1,5 @@
 [project]
-name = "local-llm-cli"
+name = "cva-cli"
 version = "0.1.0"
 description = "A Gemini-like CLI for local language models"
 readme = "README.md"
@@ -18,13 +18,13 @@ dependencies = [
     "pluggy>=1.5.0",
     "langchain-mcp-adapters>=0.1.0",
     "mcp-cli>=0.10.1",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.10"
 ]
 
 [project.scripts]
-llm = "local_llm_cli:main"
-llm-mcp-filesystem = "local_llm_cli.mcp_servers.filesystem:main"
-llm-mcp-math = "local_llm_cli.mcp_servers.math:main"
-llm-mcp-system = "local_llm_cli.mcp_servers.system:main"
+cva = "cva_cli:main"
+cva-mcp-shell = "cva_cli.mcp_servers.shell:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -34,17 +34,17 @@ def _default_mcp_servers() -> Dict[str, "MCPServerConfig"]:
     return {
         "filesystem": MCPServerConfig(
             command=python_exe,
-            args=["-m", "local_llm_cli.mcp_servers.filesystem"],
+            args=["-m", "cva_cli.mcp_servers.filesystem"],
             enabled=False,
         ),
         "math": MCPServerConfig(
             command=python_exe,
-            args=["-m", "local_llm_cli.mcp_servers.math"],
+            args=["-m", "cva_cli.mcp_servers.math"],
             enabled=False,
         ),
         "system": MCPServerConfig(
             command=python_exe,
-            args=["-m", "local_llm_cli.mcp_servers.system"],
+            args=["-m", "cva_cli.mcp_servers.system"],
             enabled=False,
         ),
     }

@@ -1,30 +1,6 @@
-filesystem:
-  command: D:\Projects\CVA\.venv\Scripts\python.exe
+shell:
+  command: "uv"
   args:
-    - -m
-    - local_llm_cli.mcp_servers.filesystem
-  env: null
+    - "run"
+    - "cva-mcp-shell"
   enabled: true
-math:
-  command: D:\Projects\CVA\.venv\Scripts\python.exe
-  args:
-    - -m
-    - local_llm_cli.mcp_servers.math
-  env: null
-  enabled: true
-system:
-  command: D:\Projects\CVA\.venv\Scripts\python.exe
-  args:
-    - -m
-    - local_llm_cli.mcp_servers.system
-  env: null
-  enabled: true
-burp:
-  command: c:\users\eshaa\appdata\local\programs\burpsuitecommunity\jre\bin\java.exe
-  args:
-    - -jar
-    - C:\Users\eshaa\AppData\Roaming\BurpSuite\mcp-proxy\mcp-proxy-all.jar
-    - --sse-url
-    - http://127.0.0.1:9876
-  env: null
-  enabled: false
