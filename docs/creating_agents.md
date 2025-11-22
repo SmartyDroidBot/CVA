@@ -6,7 +6,7 @@ This guide shows you how to create custom agents for the Local LLM CLI.
 
 1. Copy the template:
    ```powershell
-   cp src/local_llm_cli/agents/builtin_agents/_template.py src/local_llm_cli/agents/builtin_agents/my_agent.py
+   cp src/cva_cli/agents/builtin_agents/_template.py src/cva_cli/agents/builtin_agents/my_agent.py
    ```
 
 2. Edit the configuration in `my_agent.py`:
@@ -15,7 +15,7 @@ This guide shows you how to create custom agents for the Local LLM CLI.
    - Customize the `system_prompt`
    - Adjust `temperature` and other parameters
 
-3. Register your agent in `src/local_llm_cli/agents/builtin_agents/__init__.py`:
+3. Register your agent in `src/cva_cli/agents/builtin_agents/__init__.py`:
    ```python
    from .my_agent import AGENT_CONFIG as MY_AGENT
    
@@ -25,7 +25,7 @@ This guide shows you how to create custom agents for the Local LLM CLI.
    ]
    ```
 
-4. Add to the registry in `src/local_llm_cli/agents/builtin.py`:
+4. Add to the registry in `src/cva_cli/agents/builtin.py`:
    ```python
    from .builtin_agents import my_agent
    
@@ -125,7 +125,7 @@ metadata={}        # Custom metadata
 
 ## Example: Creating a Data Analyst Agent
 
-**File: `src/local_llm_cli/agents/builtin_agents/data_analyst.py`**
+**File: `src/cva_cli/agents/builtin_agents/data_analyst.py`**
 
 ```python
 from ..base import AgentConfig
@@ -277,7 +277,7 @@ agent = DataAnalystAgent(config)
 
 Then register it directly:
 ```python
-from local_llm_cli.agents import register_agent
+from cva_cli.agents import register_agent
 register_agent(agent)
 ```
 

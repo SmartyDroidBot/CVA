@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console
 
 from ..agents import get_agent, list_agents, register_config
 from ..agents.base import AgentConfig as RuntimeAgentConfig
-from ..backends import GenerationConfig, Message, get_backend, list_backends
+from ..backends import GenerationConfig, get_backend, list_backends
 from ..config import AppConfig, ConfigManager, save_config
-from ..mcp import add_mcp_server, execute_tool, get_mcp_tools, get_tool
-from ..mcp.tool_runtime import augment_system_prompt, process_response_with_tools
+from ..mcp import get_mcp_tools, get_tool
+from .controller import (
+    ensure_mcp,
+    handle_list_models,
+    handle_interaction,
+    handle_chat_loop,
+    handle_tool_execution
+)
 
 
 app = typer.Typer(
@@ -40,169 +45,8 @@ def _build_console(config: AppConfig) -> Console:
     return Console(color_system=color_system)
 
 
-def _get_state(ctx: typer.Context) -> RuntimeState:
-    state = ctx.obj
-    if not isinstance(state, RuntimeState):
-        raise RuntimeError("Runtime state has not been initialized")
-    return state
-
-
-def _initialize_mcp_servers(config: AppConfig):
-    for server_name, server_config in config.mcp_servers.items():
-        if not server_config.enabled:
-            continue
-        success = add_mcp_server(
-            server_name=server_name,
-            command=server_config.command,
-            args=server_config.args,
-            connection_type=server_config.type,
-            url=server_config.url,
-            headers=server_config.headers,
-            env=server_config.env,
-        )
-        if not success and config.verbose:
-            print(f"Warning: Failed to load MCP server: {server_name}", file=sys.stderr)
-
-
-def _ensure_mcp(state: RuntimeState):
-    if state.mcp_initialized:
-        return
-    _initialize_mcp_servers(state.config)
-    state.mcp_initialized = True
-    state.tool_support_enabled = bool(get_mcp_tools())
-
-
 def _print_error(state: RuntimeState, message: str):
     state.console.print(f"[bold red]Error:[/bold red] {message}")
-
-
-def _handle_list_models(state: RuntimeState, backend):
-    try:
-        models = backend.list_models()
-        if not models:
-            state.console.print("No models found or listing not supported for this backend")
-            return
-        state.console.print("Available models:")
-        for model in models:
-            size_info = f" ({model.size / (1024**3):.2f} GB)" if model.size else ""
-            desc_info = f" - {model.description}" if model.description else ""
-            state.console.print(f"  - {model.name}{size_info}{desc_info}")
-    except Exception as exc:  # pragma: no cover - backend errors
-        _print_error(state, f"Failed to list models: {exc}")
-        raise typer.Exit(code=1)
-
-
-def _handle_chat_mode(
-    state: RuntimeState,
-    backend,
-    agent,
-    model: str,
-    config: GenerationConfig,
-    system_override: Optional[str],
-    show_thinking: bool,
-):
-    console = state.console
-    console.print(f"[info]Starting chat mode with model: {model}")
-    console.print(f"[info]Using agent: {agent.config.name}")
-    console.print("Type 'exit'/'quit' to end, 'clear' to reset conversation")
-    console.print("=" * 50)
-
-    conversation: List[Message] = []
-    system_prompt = augment_system_prompt(
-        state.tool_support_enabled,
-        system_override or agent.config.system_prompt,
-    )
-    if system_prompt:
-        conversation.append(Message(role="system", content=system_prompt))
-
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            console.print("\nGoodbye!")
-            break
-
-        if not user_input:
-            continue
-        if user_input.lower() in {"exit", "quit"}:
-            console.print("\nGoodbye!")
-            break
-        if user_input.lower() == "clear":
-            conversation = []
-            if system_prompt:
-                conversation.append(Message(role="system", content=system_prompt))
-            console.print("\nConversation cleared.\n")
-            continue
-
-        conversation.append(Message(role="user", content=user_input))
-        console.print("\nAssistant: ", end="", flush=True)
-        try:
-            response = backend.generate(model=model, messages=conversation, config=config)
-        except Exception as exc:  # pragma: no cover - backend error path
-            console.print(f"\nError: {exc}\n")
-            conversation.pop()
-            continue
-
-        output_text, _ = process_response_with_tools(
-            console=console,
-            tool_support_enabled=state.tool_support_enabled,
-            backend=backend,
-            conversation=conversation,
-            response=response,
-            model=model,
-            config=config,
-        )
-
-        if not show_thinking:
-            output_text = re.sub(r"<think>.*?</think>", "", output_text, flags=re.DOTALL).strip()
-
-        console.print(output_text)
-
-
-def _handle_single_prompt(
-    state: RuntimeState,
-    backend,
-    agent,
-    model: str,
-    config: GenerationConfig,
-    prompt: str,
-    system_override: Optional[str],
-    show_thinking: bool,
-):
-    console = state.console
-    system_prompt = augment_system_prompt(
-        state.tool_support_enabled,
-        system_override or agent.config.system_prompt,
-    )
-    conversation: List[Message] = []
-    if system_prompt:
-        conversation.append(Message(role="system", content=system_prompt))
-    conversation.append(Message(role="user", content=prompt))
-    try:
-        response = backend.generate(model=model, messages=conversation, config=config)
-    except Exception as exc:
-        _print_error(state, str(exc))
-        raise typer.Exit(code=1)
-
-    output_text, usage = process_response_with_tools(
-        console=console,
-        tool_support_enabled=state.tool_support_enabled,
-        backend=backend,
-        conversation=conversation,
-        response=response,
-        model=model,
-        config=config,
-    )
-
-    if not show_thinking:
-        output_text = re.sub(r"<think>.*?</think>", "", output_text, flags=re.DOTALL).strip()
-
-    console.print("\n" + "=" * 50)
-    console.print(output_text)
-    console.print("=" * 50 + "\n")
-    if usage:
-        total = usage.get("total_tokens", "N/A")
-        console.print(f"[info]Tokens used: {total}")
 
 
 @app.callback(invoke_without_command=True)
@@ -277,7 +121,7 @@ def _root_command(
 
     tool_flags_requested = list_tools_flag or tool_info or use_tool
     if tool_flags_requested or state.config.mcp_servers:
-        _ensure_mcp(state)
+        ensure_mcp(state)
 
     if list_tools_flag:
         console.print("Available tools from MCP servers:")
@@ -318,26 +162,7 @@ def _root_command(
         raise typer.Exit()
 
     if use_tool:
-        params: Dict[str, str] = {}
-        for param in tool_params or []:
-            try:
-                key, value = param.split("=", 1)
-                params[key.strip()] = value.strip()
-            except ValueError:
-                _print_error(state, f"Invalid tool parameter format: {param}. Use key=value.")
-                raise typer.Exit(code=1)
-
-        result = execute_tool(use_tool, **params)
-        if result.get("success"):
-            console.print("\n✓ Success:")
-            if output := result.get("output"):
-                console.print(output)
-            metadata = result.get("metadata")
-            if metadata:
-                console.print(f"\nMetadata: {metadata}")
-        else:
-            _print_error(state, result.get("error", "Tool execution failed"))
-            raise typer.Exit(code=1)
+        handle_tool_execution(state, use_tool, tool_params)
         raise typer.Exit()
 
     prompt_text: Optional[str] = None
@@ -380,13 +205,13 @@ def _root_command(
     )
 
     if list_models:
-        _handle_list_models(state, backend)
+        handle_list_models(state, backend)
         raise typer.Exit()
 
     if chat_mode:
-        _handle_chat_mode(state, backend, agent, chosen_model, generation_config, system_prompt, show_thinking)
+        handle_chat_loop(state, backend, agent, chosen_model, generation_config, system_prompt, show_thinking)
     elif prompt_text:
-        _handle_single_prompt(
+        handle_interaction(
             state,
             backend,
             agent,

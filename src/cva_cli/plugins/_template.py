@@ -8,9 +8,9 @@ Place plugins in a custom plugins directory and load them at runtime.
 """
 
 from typing import List, Optional, Dict, Any
-from local_llm_cli.plugins import Plugin
-from local_llm_cli.tools import Tool, register_tool
-from local_llm_cli.agents import AgentConfig, register_config
+from cva_cli.plugins import Plugin
+from cva_cli.tools import Tool, register_tool
+from cva_cli.agents import AgentConfig, register_config
 
 
 class ExamplePlugin(Plugin):
@@ -172,12 +172,12 @@ class WebScraperPlugin(Plugin):
 # 
 # 1. Save to a plugins directory
 # 2. Load in your code:
-#    from local_llm_cli.plugins import load_plugin
+#    from cva_cli.plugins import load_plugin
 #    plugin = ExamplePlugin()
 #    load_plugin(plugin.__class__, config={"api_key": "..."})
 # 
 # 3. Or load from file:
-#    from local_llm_cli.plugins import get_loader
+#    from cva_cli.plugins import get_loader
 #    loader = get_loader()
 #    loader.add_plugin_path(Path("./plugins"))
 #    plugins = loader.discover_plugins()

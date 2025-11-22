@@ -119,19 +119,19 @@ Example `config/mcp_servers.yaml`:
 filesystem:
   type: stdio
   command: python
-  args: ["-m", "local_llm_cli.mcp_servers.filesystem"]
+  args: ["-m", "cva_cli.mcp_servers.filesystem"]
   enabled: false
 
 math:
   type: stdio
   command: python
-  args: ["-m", "local_llm_cli.mcp_servers.math"]
+  args: ["-m", "cva_cli.mcp_servers.math"]
   enabled: false
 
 system:
   type: stdio
   command: python
-  args: ["-m", "local_llm_cli.mcp_servers.system"]
+  args: ["-m", "cva_cli.mcp_servers.system"]
   enabled: false
 ```
 
@@ -204,7 +204,7 @@ See `docs/creating_agents.md` for detailed instructions on creating custom agent
 
 ### Plugin Development
 
-See `src/local_llm_cli/plugins/_template.py` for a plugin template.
+See `src/cva_cli/plugins/_template.py` for a plugin template.
 
 ## Command-Line Options
 
