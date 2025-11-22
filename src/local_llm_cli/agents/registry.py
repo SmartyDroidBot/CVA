@@ -2,7 +2,6 @@
 
 from typing import Dict, Optional, List, Tuple
 from .base import Agent, AgentConfig, SimpleAgent
-from .builtin import BUILTIN_AGENTS, create_builtin_agent
 
 
 class AgentRegistry:
@@ -11,14 +10,6 @@ class AgentRegistry:
     def __init__(self):
         self._agents: Dict[str, Agent] = {}
         self._configs: Dict[str, AgentConfig] = {}
-        
-        # Register built-in agents
-        self._register_builtins()
-    
-    def _register_builtins(self):
-        """Register all built-in agents"""
-        for name, config in BUILTIN_AGENTS.items():
-            self._configs[name] = config
     
     def register_agent(self, agent: Agent):
         """
@@ -58,7 +49,7 @@ class AgentRegistry:
         if name in self._agents:
             return self._agents[name]
         
-        # Check if config exists (built-in)
+        # Check if config exists
         if name in self._configs:
             config = self._configs[name]
             agent = SimpleAgent(config, agent_type=name)
@@ -112,16 +103,12 @@ class AgentRegistry:
     
     def remove_agent(self, name: str):
         """
-        Remove a custom agent (built-in agents cannot be removed).
+        Remove a custom agent.
         
         Args:
             name: Agent name
         """
         name = name.lower()
-        
-        # Don't remove built-in agents
-        if name in BUILTIN_AGENTS:
-            raise ValueError(f"Cannot remove built-in agent '{name}'")
         
         self._agents.pop(name, None)
         self._configs.pop(name, None)

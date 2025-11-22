@@ -3,6 +3,6 @@ backend:
   url: http://localhost:11434
   default_model: qwen3:8b
   timeout: 120
-default_agent: general
+default_agent: penetration_testing
 verbose: false
 color_output: true
