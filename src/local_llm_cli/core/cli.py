@@ -73,7 +73,7 @@ def _ensure_mcp(state: RuntimeState):
 
 
 def _print_error(state: RuntimeState, message: str):
-    state.console.print(f"[bold red]Error:[/bold red] {message}", file=sys.stderr)
+    state.console.print(f"[bold red]Error:[/bold red] {message}")
 
 
 def _handle_list_models(state: RuntimeState, backend):
