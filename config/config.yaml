@@ -1,7 +1,7 @@
 backend:
   type: ollama
   url: http://localhost:11434
-  default_model: qwen3:8b
+  default_model: qwen2.5-coder:7b #This is the model Gagan is using, change if needed
   timeout: 120
 default_agent: penetration_testing
 verbose: false
