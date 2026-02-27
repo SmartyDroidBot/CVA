@@ -1,306 +1,192 @@
-# Local LLM CLI
+# CVA — Cognitive VAPT Assistant
 
-A modular, extensible command-line interface for local Large Language Models with MCP (Model Context Protocol) tool integration.
+An AI-powered penetration testing assistant with a Rich terminal UI. CVA guides you through the full VAPT lifecycle using a ReAct agent backed by Ollama (or cloud LLMs) and a suite of Kali Linux security tools exposed via the Model Context Protocol (MCP).
 
 ## Features
 
-- **Multiple Backends**: Support for Ollama and llama.cpp
-- **Agent System**: Different AI personas with customizable prompts and behaviors
-- **MCP Tool Integration**: Dynamic tool loading and automatic tool calls from MCP servers
-- **Built-in Tools**: File operations, math calculator, system commands
-- **Typer + Rich CLI**: Modern UX with colorized output, streaming, and contextual help
-- **Configuration System**: Pydantic-backed YAML/JSON config with validation and defaults
-- **Plugin Architecture**: Extensible through custom plugins
-- **Interactive Chat**: Multi-turn conversations with context
-- **Flexible I/O**: Single prompts, file input, or interactive chat mode
+- **ReAct Agent** — LangGraph-based reasoning loop that selects tools, explains its thinking, and summarizes findings
+- **Rich TUI** — Gemini CLI-style terminal interface with colour, panels, markdown rendering, and a status line
+- **VAPT Lifecycle Tracking** — Automatic phase tracking (Recon → Enum → Vuln → Exploit → Post-Exploit → Report)
+- **MCP Tool Integration** — Security tools exposed through `src/mcp_server/kali.py` (nmap, nikto, gobuster, sqlmap, hydra, ffuf, searchsploit, and more)
+- **Session Management** — MongoDB-backed sessions to save/resume pentest conversations
+- **Report Generation** — Markdown and HTML pentest reports from collected findings
+- **Multi-Provider LLM** — Ollama (local) or OpenAI / Anthropic / Google (cloud) via `.env`
+- **Context Summarisation** — Auto-compresses long conversations to preserve context window
 
 ## Quick Start
 
+### Prerequisites
+
+| Dependency | Required | Notes |
+|---|---|---|
+| Python ≥ 3.12 | ✅ | |
+| [uv](https://astral.sh/uv) | ✅ | Fast Python package manager |
+| [Ollama](https://ollama.ai) | ✅ (default) | Or set a cloud provider in `.env` |
+| MongoDB | Optional | Sessions stored in-memory without it |
+| Qdrant | Optional | Vector store for RAG knowledge base |
+| Kali Linux tools | Required for tools | `nmap`, `nikto`, `gobuster`, etc. |
+
 ### Installation
 
-```powershell
-# Clone the repository
+```bash
+# Clone the repo
 git clone <repo-url>
 cd CVA
 
-# Install with uv (recommended)
+# Install dependencies
 uv sync
 
-# Or with pip
-pip install -e .
+# Pull a model
+ollama pull qwen3:8b
+
+# Copy and edit environment config
+cp .env.example .env
+$EDITOR .env
 ```
 
-### Prerequisites
+### Running CVA
 
-1. **Ollama** (recommended): Install from [ollama.ai](https://ollama.ai)
-   ```powershell
-   ollama pull llama2
-   ```
-
-2. **Python 3.10+**: The project requires Python 3.10 or higher
-
-### Basic Usage
-
-```powershell
-# Initialize configuration (creates config/config.yaml plus companion files)
-uv run llm --init-config
-
-# List available tools
-uv run llm --list-tools
-
-# List available agents
-uv run llm --list-agents
-
-# Single prompt (positional argument)
-uv run llm "What is 2+2?"
-
-# Interactive chat
-uv run llm --chat
-
-# Use specific agent
-uv run llm --chat --agent coding
-
-# Use specific model
-uv run llm --chat --model qwen3:8b
-
-# Inspect available models from the active backend
-uv run llm --list-models
-
-# Execute an MCP tool
-uv run llm --use-tool read_file --tool-params path=README.md
-
-# Ask the assistant to call MCP tools automatically
-uv run llm "Summarize README.md"  # LLM will emit a <<CALL_TOOL ...>> directive when needed
+```bash
+python main.py
 ```
+
+You will be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at any time to see available commands.
+
+## Slash Commands
+
+| Command | Description |
+|---|---|
+| `/help` | Show all commands |
+| `/target <ip/url>` | Set the pentest target |
+| `/run <cmd>` | Execute a raw shell command and auto-parse output |
+| `/tools` | List all loaded MCP tools by category |
+| `/progress` | Show VAPT phase progress and recent actions |
+| `/findings` | Summary of findings from the current session |
+| `/sessions [list\|new\|load\|save\|delete]` | Manage MongoDB sessions |
+| `/report [md\|html\|both]` | Generate a pentest report |
+| `/model <provider:model>` | Switch LLM at runtime (e.g. `/model ollama:llama3`) |
+| `/debug [on\|off]` | Toggle raw tool-output display |
+| `/settings` | Show current settings |
+| `/clear` | Clear the screen |
+| `/exit` | Exit CVA (auto-saves current session) |
 
 ## Configuration
 
-By default, configuration lives in the `config/` directory within this repository. Pass `--config PATH` to store the base config elsewhere (e.g., `%APPDATA%\llm\config.yaml`). The manager now keeps related data in three files so MCP settings and system prompts can evolve independently:
+### Environment Variables (`.env`)
+
+Copy `.env.example` to `.env` and edit as needed:
+
+```dotenv
+# LLM Provider: ollama | openai | anthropic | google
+LLM_PROVIDER=ollama
+OLLAMA_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Cloud LLM keys (uncomment as needed)
+# OPENAI_API_KEY=sk-...
+# ANTHROPIC_API_KEY=sk-ant-...
+# GOOGLE_API_KEY=...
+
+# Optional services
+MONGO_URI=mongodb://localhost:27017
+QDRANT_HOST=localhost
+QDRANT_PORT=6333
+
+# App settings
+DEBUG_MODE=false
+SANDBOX_ENABLED=false
+```
+
+### Config Files (`config/`)
 
 | File | Purpose |
-| --- | --- |
-| `config/config.yaml` | Backend, defaults, and global flags |
-| `config/agents.yaml` | Agent definitions (temperatures, system prompts, preferred models) |
-| `config/mcp_servers.yaml` | MCP server definitions |
-
-Example `config/config.yaml`:
-
-```yaml
-backend:
-  type: ollama
-  url: http://localhost:11434
-  default_model: qwen3:8b
-  timeout: 120
-default_agent: general
-verbose: false
-color_output: true
-```
-
-Example `config/agents.yaml`:
-
-```yaml
-general:
-  temperature: 0.7
-  system_prompt: "You are a helpful AI assistant."
-
-coding:
-  temperature: 0.2
-  preferred_model: codellama
-  system_prompt: "You are an expert programmer."
-
-conversational:
-  temperature: 0.8
-  system_prompt: "You are a friendly conversational AI."
-```
-
-Example `config/mcp_servers.yaml`:
-
-```yaml
-filesystem:
-  type: stdio
-  command: python
-  args: ["-m", "cva_cli.mcp_servers.filesystem"]
-  enabled: false
-
-math:
-  type: stdio
-  command: python
-  args: ["-m", "cva_cli.mcp_servers.math"]
-  enabled: false
-
-system:
-  type: stdio
-  command: python
-  args: ["-m", "cva_cli.mcp_servers.system"]
-  enabled: false
-```
-
-> 💡 **Tip:** Set `enabled: true` for any MCP server you want auto-started. You can also provide `url` and `headers` to connect to SSE-capable remote servers instead of spawning a local process.
-
-
-## Built-in MCP Servers
-
-These Python reference servers ship with the project but remain disabled until you opt-in via the config file:
-
-### Filesystem
-- `read_file`: Read text files
-- `write_file`: Write/append to files
-- `list_directory`: List directory contents with glob patterns
-
-### Math
-- `calculator`: Evaluate mathematical expressions safely
-
-### System
-- `system_info`: Get platform/Python information
-- `shell_command`: Execute shell commands (with safety checks)
-
-## Agents
-
-### General
-- **Temperature**: 0.7
-- **Use Case**: General-purpose assistance
-- **System Prompt**: Balanced, helpful AI assistant
-
-### Coding
-- **Temperature**: 0.2 (precise)
-- **Preferred Model**: codellama
-- **Use Case**: Programming, code review, debugging
-- **System Prompt**: Expert programmer providing clear, efficient code
-
-### Conversational
-- **Temperature**: 0.8 (creative)
-- **Use Case**: Casual conversation, brainstorming
-- **System Prompt**: Friendly, engaging conversational AI
-
-## Advanced Usage
-
-### Automatic MCP Tool Calls
-
-During normal prompts or chat sessions the assistant can now invoke MCP tools on its own. To trigger a tool call, the model must emit a directive that looks like this:
-
-```
-<<CALL_TOOL tool_name {"argument": "value"}>>
-```
-
-When the CLI detects this pattern it will execute the requested MCP tool (up to three calls per response), stream the results back into the conversation, and then re-query the LLM so it can finish the answer with the new information. The tool catalog is still available via `--list-tools`, and you can execute a tool manually at any time with `--use-tool`.
-
-### Custom MCP Servers
-
-Add external MCP servers to your config:
-
-```yaml
-mcp_servers:
-  github:
-    command: npx
-    args: ["-y", "@modelcontextprotocol/server-github"]
-    env:
-      GITHUB_TOKEN: "your-token"
-    enabled: true
-```
-
-### Creating Custom Agents
-
-See `docs/creating_agents.md` for detailed instructions on creating custom agent personas.
-
-### Plugin Development
-
-See `src/cva_cli/plugins/_template.py` for a plugin template.
-
-## Command-Line Options
-
-| Option | Description |
-| --- | --- |
-| `prompt` *(positional)* | Words following the command form the prompt (e.g., `llm "Hello"`). |
-| `--config PATH` | Override the config file path (defaults to `config/config.yaml`). |
-| `--init-config` | Write a fresh config and exit. |
-| `--backend`, `--url`, `--model` | Override backend type, API URL, or model name for this run. |
-| `--agent` | Choose the registered agent persona. |
-| `--temperature`, `--max-tokens` | Override sampling parameters per run. |
-| `--no-stream` | Disable streaming token output. |
-| `--system TEXT` | Provide a one-off system prompt override. |
-| `--chat` | Start interactive chat mode (defaults on if no prompt is provided). |
-| `--file PATH` | Read prompt text from a file. |
-| `--list-models` / `--list-backends` / `--list-agents` | Inspect available models/backends/agents and exit. |
-| `--list-tools` | Discover the aggregated MCP tool catalog. |
-| `--tool-info NAME` | Show metadata for a specific tool. |
-| `--use-tool NAME` | Execute a tool directly; combine with `--tool-params key=value` pairs. |
-| `--verbose` | Emit extra debug information (also influences MCP warnings). |
+|---|---|
+| `config/config.yaml` | App defaults (timeout, etc.) |
+| `config/agents.yaml` | Agent personas (name, system prompt, temperature) |
+| `config/mcp_servers.yaml` | External MCP server definitions |
 
 ## Architecture
 
 ```
-local-llm-cli/
-├── backends/          # LLM backend implementations (Ollama, llama.cpp)
-├── agents/            # Agent system with personas
-├── mcp/               # MCP client and server management
-├── mcp_servers/       # Built-in MCP tool servers
-├── config/            # Configuration management
-├── plugins/           # Plugin system
-└── core/              # CLI core and main logic
+CVA/
+├── main.py                   # Entry point — terminal UI loop
+├── src/
+│   ├── orchestrator.py       # LangGraph ReAct agent
+│   ├── config.py             # Pydantic settings (reads .env)
+│   ├── state.py              # Shared state types
+│   ├── ui/
+│   │   ├── cli.py            # Rich TUI: banner, panels, input
+│   │   └── commands.py       # Slash command handler
+│   ├── brain/
+│   │   ├── llm_provider.py   # Multi-provider LLM factory
+│   │   └── thinking.py       # Parse <think> blocks from LLM output
+│   ├── tools/
+│   │   └── mcp_client.py     # Bridges MCP server tools to LangChain
+│   ├── mcp_server/
+│   │   └── kali.py           # MCP server: Kali Linux security tools
+│   ├── memory/
+│   │   ├── session_store.py  # MongoDB session persistence
+│   │   └── summarizer.py     # LLM-based context compressor
+│   ├── tracker/
+│   │   └── task_tree.py      # VAPT phase + action tracker
+│   ├── knowledge/
+│   │   ├── rag.py            # Qdrant RAG retrieval
+│   │   └── static_kb.py      # Static pentest knowledge base
+│   ├── parser/
+│   │   └── intelligent_parser.py  # Parses raw tool output into findings
+│   └── reporting/
+│       └── generator.py      # Markdown/HTML report generator
+├── config/                   # YAML configs
+├── docs/                     # Extended documentation
+├── tests/                    # Pytest test suite
+├── .env.example              # Environment variable template
+└── pyproject.toml            # Project metadata and dependencies
+```
+
+## Available MCP Tools
+
+Tools are provided by `src/mcp_server/kali.py` and loaded automatically on startup. Use `/tools` inside CVA to see what's loaded.
+
+| Category | Tools |
+|---|---|
+| **Recon** | `nmap_scan`, `whatweb_scan`, `curl_request` |
+| **Enumeration** | `gobuster_dir`, `ffuf_fuzz` |
+| **Vulnerability** | `nikto_scan`, `search_exploitdb` |
+| **Exploitation** | `sqlmap_scan`, `hydra_bruteforce`, `execute_sandboxed_script` |
+| **Research** | `search_web` |
+| **Utility** | `execute_shell_command`, `hash_identify` |
+
+## VAPT Workflow Example
+
+```
+CVA ❯ /target 192.168.1.100
+CVA ❯ Perform a basic recon scan on the target
+CVA ❯ /progress
+CVA ❯ Enumerate web directories
+CVA ❯ /findings
+CVA ❯ /report md
+```
+
+## Running Tests
+
+```bash
+uv run pytest tests/ -v
 ```
 
 ## Troubleshooting
 
-### "No module named 'ollama'"
-This is expected - the CLI uses HTTP requests to Ollama, not the Python client.
+### "Failed to load MCP tools"
+- Ensure `python main.py` is run from the project root
+- Check that `src/mcp_server/kali.py` is present
+- Security tools (nmap, nikto, etc.) must be installed on the host
 
-### "Model not found"
-Pull the model with Ollama:
-```powershell
-ollama pull llama2
-```
+### "Failed to initialize agent"
+- Confirm Ollama is running: `ollama serve`
+- Or set a cloud provider via `LLM_PROVIDER=openai` in `.env`
 
-### "No tools available"
-Run `--init-config` to create default configuration with built-in MCP servers.
-
-### MCP server connection errors
-- Ensure Python is in your PATH
-- Check that the MCP servers are enabled in config
-- Try with `--verbose` for detailed error messages
-
-## Development
-
-### Project Structure
-- **Modular**: Separation of concerns (backends, agents, tools, config)
-- **Extensible**: Plugin system and custom agents
-- **Type-safe**: Full type hints for better IDE support
-- **Async-ready**: MCP integration uses async/await
-
-### Running Tests & Checks
-```powershell
-# Unit tests (currently minimal; add your own!)
-uv run pytest
-
-# Linting / type checks (optional but recommended)
-uv run ruff check
-uv run mypy
-
-# Quick CLI smoke tests
-uv run llm --list-tools
-uv run llm "Calculate sqrt(144)"
-uv run llm --chat --agent coding
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+### "MongoDB not available"
+- CVA falls back to in-memory sessions — you can still use `/sessions new` but data is lost on exit
 
 ## License
 
-MIT License - see LICENSE file for details
-
-## Links
-
-- **Ollama**: https://ollama.ai
-- **llama.cpp**: https://github.com/ggerganov/llama.cpp
-- **MCP Specification**: https://modelcontextprotocol.io
-- **Documentation**: See `docs/` directory
-
-## Acknowledgments
-
-- Built with the Model Context Protocol (MCP)
-- Inspired by Google's Gemini CLI
-- Powered by Ollama and llama.cpp
+MIT License

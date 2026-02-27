@@ -1,309 +1,121 @@
-# MCP (Model Context Protocol) Setup Guide
+# MCP Setup Guide
 
-This project uses MCP (Model Context Protocol) to provide tools instead of built-in implementations. This allows you to leverage a rich ecosystem of MCP servers for various capabilities.
+CVA uses the Model Context Protocol (MCP) to expose Kali Linux security tools to the LangGraph agent. Tools are implemented in `src/mcp_server/kali.py` and loaded into the agent by `src/tools/mcp_client.py`.
 
-## What is MCP?
+## How It Works
 
-MCP (Model Context Protocol) is a standard protocol for connecting AI assistants to external tools and data sources. Instead of implementing tools directly, we connect to MCP servers that provide tools.
-
-## Benefits
-
-- **Rich Ecosystem**: Use any MCP server from the growing ecosystem
-- **Separation of Concerns**: Tool implementation is separate from the CLI
-- **Easy Updates**: Update tools by updating MCP servers
-- **Community Tools**: Leverage community-built MCP servers
-- **Security**: Tools run in separate processes with proper isolation
-
-## Available MCP Servers
-
-Here are some popular MCP servers you can use:
-
-### Official MCP Servers
-
-1. **@modelcontextprotocol/server-filesystem**
-   - File operations (read, write, list, search)
-   - Safe filesystem access
-
-2. **@modelcontextprotocol/server-github**
-   - GitHub API integration
-   - Repository management
-
-3. **@modelcontextprotocol/server-google-maps**
-   - Google Maps integration
-   - Location services
-
-4. **@modelcontextprotocol/server-postgres**
-   - PostgreSQL database access
-   - SQL query execution
-
-5. **@modelcontextprotocol/server-brave-search**
-   - Web search via Brave API
-   - News search
-
-6. **@modelcontextprotocol/server-slack**
-   - Slack integration
-   - Channel management
-
-### Community MCP Servers
-
-Many more available at: https://github.com/modelcontextprotocol
-
-## Installation
-
-### Prerequisites
-
-1. **Node.js** (for NPM-based MCP servers):
-   ```powershell
-   # Check if Node.js is installed
-   node --version
-   
-   # If not, download from nodejs.org
-   ```
-
-2. **Python MCP package**:
-   ```powershell
-   # Already included in project dependencies
-   uv sync
-   ```
-
-### Installing MCP Servers
-
-Most MCP servers are distributed via NPM:
-
-```powershell
-# Install filesystem server globally
-npm install -g @modelcontextprotocol/server-filesystem
-
-# Or use npx to run without installing
-npx @modelcontextprotocol/server-filesystem
+```
+main.py
+  └─ get_mcp_tools()                   # src/tools/mcp_client.py
+       └─ stdio MCP connection
+            └─ src/mcp_server/kali.py  # Kali tools server
+                 └─ LangChain StructuredTools → LangGraph agent
 ```
 
-## Configuration
+`McpClient` connects to `kali.py` over stdio, discovers available tools, converts them to LangChain `StructuredTool` objects, and passes them to the `Orchestrator`. The agent then calls them through the standard ReAct tool-use loop.
 
-### Option 1: Quick Start (No Config File)
+## Built-in Kali Tools
 
-For testing, you can run MCP servers directly and point the CLI at them using `--url`/`--tool-params`:
+These tools are available immediately after `uv sync` as long as the underlying binaries are installed on the host:
 
-```powershell
-# In one terminal, start an MCP server
-npx -y @modelcontextprotocol/server-filesystem d:\Projects
+| Tool | Binary Required | Description |
+|---|---|---|
+| `nmap_scan` | `nmap` | TCP/UDP port scanning |
+| `nikto_scan` | `nikto` | Web server vulnerability scan |
+| `gobuster_dir` | `gobuster` | Directory/file brute-forcing |
+| `ffuf_fuzz` | `ffuf` | Web fuzzing |
+| `sqlmap_scan` | `sqlmap` | SQL injection detection |
+| `hydra_bruteforce` | `hydra` | Login brute-forcing |
+| `whatweb_scan` | `whatweb` | Web technology fingerprinting |
+| `curl_request` | `curl` | HTTP request runner |
+| `search_exploitdb` | `searchsploit` | Exploit-DB search |
+| `search_web` | — | Web search via API |
+| `execute_shell_command` | — | Raw shell command execution |
+| `execute_sandboxed_script` | Docker | Script execution in a container |
+| `hash_identify` | — | Hash type identification |
 
-# Note the command and use it in configuration
-```
+Use `/tools` inside CVA to see exactly which tools loaded and their descriptions.
 
-### Option 2: Configuration File (Recommended)
+## Adding External MCP Servers
 
-Create or edit `config/mcp_servers.yaml` (or pass `--config PATH` to point at a different directory; companion files share the same folder):
-
-```yaml
-mcp_servers:
-  # Filesystem access
-  filesystem:
-    command: npx
-    args:
-      - "-y"
-      - "@modelcontextprotocol/server-filesystem"
-      - "d:\\Projects"  # Root directory to allow access
-    
-  # GitHub integration (requires GITHUB_TOKEN)
-  github:
-    command: npx
-    args:
-      - "-y"
-      - "@modelcontextprotocol/server-github"
-    env:
-      GITHUB_TOKEN: "your_github_token_here"
-  
-  # Web search (requires BRAVE_API_KEY)
-  brave_search:
-    command: npx
-    args:
-      - "-y"
-      - "@modelcontextprotocol/server-brave-search"
-    env:
-      BRAVE_API_KEY: "your_brave_api_key_here"
-```
-
-> 🔌 When `type: sse`, the CLI will automatically run `command` + `args` before attempting to connect to `url`. Omit `command` if you're pointing at a hosted SSE endpoint that's already running.
-
-### Option 3: Python MCP Servers
-
-You can also create Python-based MCP servers:
-
-```yaml
-mcp_servers:
-  custom_tools:
-    command: python
-    args:
-      - "d:\\path\\to\\your\\mcp_server.py"
-```
-
-## Usage
-
-Once configured, tools are automatically available:
-
-```powershell
-# List all available tools
-uv run llm --list-tools
-
-# Use a tool
-uv run llm --use-tool read_file --tool-params path=README.md
-
-# Use tools with agents
-uv run llm --agent coding --chat
-# Agent can now access filesystem tools
-```
-
-> ℹ️ Pass multiple parameters by repeating `--tool-params`, e.g. `--tool-params repo=owner/project --tool-params title="Bug"`.
-
-## Example: Filesystem Server
-
-### 1. Install
-```powershell
-npm install -g @modelcontextprotocol/server-filesystem
-```
-
-### 2. Configure
-Add to `config/mcp_servers.yaml`:
-```yaml
-mcp_servers:
-  filesystem:
-    command: npx
-    args:
-      - "@modelcontextprotocol/server-filesystem"
-      - "d:\\Projects"  # Allowed directory
-```
-
-### 3. Use
-```powershell
-# List tools
-uv run llm --list-tools
-
-# Read a file
-uv run llm --use-tool read_file --tool-params path=src/main.py
-
-# Search files
-uv run llm --use-tool search_files --tool-params pattern="*.py" --tool-params path=src/
-
-# Use with agent
-uv run llm --agent coding "Read and analyze src/main.py"
-```
-
-## Example: GitHub Server
-
-### 1. Get GitHub Token
-1. Go to https://github.com/settings/tokens
-2. Generate a new token with appropriate scopes
-
-### 2. Configure
-```yaml
-mcp_servers:
-  github:
-    command: npx
-    args:
-      - "@modelcontextprotocol/server-github"
-    env:
-      GITHUB_TOKEN: "ghp_your_token_here"
-```
-
-### 3. Use
-```powershell
-# List repositories
-uv run llm --use-tool list_repositories
-
-# Create an issue
-uv run llm --use-tool create_issue --tool-params repo=owner/repo title="Bug report" body="Description"
-
-# Use with agent
-uv run llm --agent coding "Create an issue in my repo about the bug I just described"
-```
-
-## Creating Custom MCP Servers
-
-You can create your own MCP servers in Python:
+Edit `config/mcp_servers.yaml` to add extra MCP servers. CVA's MCP client currently connects to `src/mcp_server/kali.py` by default. To route traffic to a different server, update `McpClient.__init__` in `src/tools/mcp_client.py`:
 
 ```python
-# my_mcp_server.py
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-
-app = Server("my-custom-server")
-
-@app.call_tool()
-async def my_tool(arguments: dict) -> list[TextContent]:
-    # Your tool implementation
-    result = do_something(arguments)
-    return [TextContent(type="text", text=result)]
-
-if __name__ == "__main__":
-    stdio_server(app)
+class McpClient:
+    def __init__(self, server_script: str = "src/mcp_server/kali.py"):
 ```
 
-Then add to `config/mcp_servers.yaml` (or the corresponding file alongside your base config):
-```yaml
-mcp_servers:
-  custom:
-    command: python
-    args:
-      - "path/to/my_mcp_server.py"
+### Example — add a filesystem MCP server
+
+1. Install the server:
+   ```bash
+   npm install -g @modelcontextprotocol/server-filesystem
+   ```
+
+2. Add its YAML entry to `config/mcp_servers.yaml`:
+   ```yaml
+   filesystem:
+     command: npx
+     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home"]
+     enabled: true
+   ```
+
+3. To load it alongside `kali.py`, instantiate multiple `McpClient` objects in `src/tools/mcp_client.py` and merge the returned tool lists.
+
+## Creating a Custom MCP Server
+
+Any Python file that implements the MCP stdio protocol can serve as a tool source:
+
+```python
+# src/mcp_server/my_tools.py
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import TextContent, Tool
+
+app = Server("my-tools")
+
+@app.list_tools()
+async def list_tools():
+    return [Tool(name="my_tool", description="Does something", inputSchema={
+        "type": "object",
+        "properties": {"param": {"type": "string"}},
+        "required": ["param"],
+    })]
+
+@app.call_tool()
+async def call_tool(name: str, arguments: dict):
+    if name == "my_tool":
+        result = do_something(arguments["param"])
+        return [TextContent(type="text", text=result)]
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(stdio_server(app))
+```
+
+Then point `McpClient` at it:
+
+```python
+client = McpClient(server_script="src/mcp_server/my_tools.py")
 ```
 
 ## Security Considerations
 
-1. **Filesystem Access**: Only grant access to necessary directories
-2. **API Keys**: Store sensitive keys in environment variables or secure config
-3. **Command Execution**: Be careful with servers that execute commands
-4. **Network Access**: Review what external services servers connect to
+- `execute_shell_command` runs commands with the permissions of the CVA process — use with care and only against authorised targets
+- Set `SANDBOX_ENABLED=true` in `.env` to route script execution through a Docker container
+- Only test systems you are authorised to test
 
 ## Troubleshooting
 
-### "No tools available"
-- Check MCP servers are configured correctly
-- Verify servers are installed (for NPM servers: `npm list -g`)
-- Check server logs for errors
-
-### "Failed to connect to MCP server"
-- Ensure the command is correct and accessible
-- Check environment variables are set
-- Verify Node.js is installed (for NPM servers)
-
-### "MCP tool execution failed"
-- Check tool parameters are correct
-- Review server logs
-- Ensure proper permissions (for filesystem access)
-
-## Recommended Setup
-
-For a complete development environment:
-
-```yaml
-mcp_servers:
-  # Essential: File operations
-  filesystem:
-    command: npx
-    args:
-      - "@modelcontextprotocol/server-filesystem"
-      - "d:\\Projects"
-  
-  # Development: GitHub
-  github:
-    command: npx
-    args:
-      - "@modelcontextprotocol/server-github"
-    env:
-      GITHUB_TOKEN: "${GITHUB_TOKEN}"  # From environment
-  
-  # Research: Web search
-  brave_search:
-    command: npx
-    args:
-      - "@modelcontextprotocol/server-brave-search"
-    env:
-      BRAVE_API_KEY: "${BRAVE_API_KEY}"
-```
+| Problem | Fix |
+|---|---|
+| `Failed to load MCP tools` | Run `python main.py` from the project root |
+| Tool returns "command not found" | Install the binary (`sudo apt install nmap`) |
+| `execute_sandboxed_script` fails | Install Docker and set `SANDBOX_ENABLED=true` |
+| Tool list is empty | Check that `src/mcp_server/kali.py` exists and is valid Python |
 
 ## Learn More
 
-- MCP Documentation: https://modelcontextprotocol.io/
-- MCP Servers: https://github.com/modelcontextprotocol
-- Python MCP SDK: https://github.com/modelcontextprotocol/python-sdk
+- [MCP Specification](https://modelcontextprotocol.io/)
+- [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk)
+- [MCP Tool Servers](https://github.com/modelcontextprotocol)
