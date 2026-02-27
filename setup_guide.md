@@ -1,171 +1,109 @@
-# Quick Setup Guide for Local LLM CLI
+# CVA — Quick Setup Guide
 
-## Windows Setup (Step-by-Step)
+## 1. Install uv
 
-### 1. Install uv
+```bash
+# Linux / macOS
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-```powershell
-# Using PowerShell
+# Windows (PowerShell)
 irm https://astral.sh/uv/install.ps1 | iex
 ```
 
-Or download from [astral.sh/uv](https://astral.sh/uv)
+## 2. Install Python Dependencies
 
-### 2. Install Dependencies
-
-```powershell
-cd d:\Projects\CVA
+```bash
+cd CVA
 uv sync
 ```
 
-### 3. Install Ollama (Easiest Option)
+> `uv sync` reads `pyproject.toml` and `uv.lock` to create the virtual environment in `.venv/`.
 
-1. Download Ollama from [ollama.ai](https://ollama.ai/download)
-2. Run the installer
-3. Open PowerShell and install a model:
+## 3. Install Ollama and a Model
 
-```powershell
-# Install a fast, general-purpose model
-ollama pull llama2
+Download Ollama from [ollama.ai](https://ollama.ai) then pull a model:
 
-# Or install Mistral (better quality)
-ollama pull mistral
-
-# Or install a coding model
-ollama pull codellama
+```bash
+ollama pull qwen3:8b      # recommended default
+# or
+ollama pull llama3.2:3b   # lighter option
 ```
 
-4. Verify installation:
-```powershell
+Verify Ollama is running:
+```bash
 ollama list
 ```
 
-### 4. Initialize and Test the CLI
+## 4. Configure the Environment
 
-```powershell
-# Write config/config.yaml (plus agents.yaml & mcp_servers.yaml)
-uv run llm --init-config
-
-# Test basic prompt
-uv run llm "Hello, who are you?"
-
-# Test chat mode
-uv run llm --chat
+```bash
+cp .env.example .env
 ```
 
-## Quick Start Examples
+Edit `.env` — at minimum set `OLLAMA_MODEL` to the model you pulled. See `.env.example` for all options including cloud LLM keys and optional service endpoints.
 
-### Example 1: Ask a Question
-```powershell
-uv run llm "What is the difference between Python and JavaScript?"
+## 5. (Optional) Start Supporting Services
+
+### MongoDB — for session persistence
+
+```bash
+docker compose up -d mongodb
+# or: mongod --dbpath /data/db
 ```
 
-### Example 2: Start a Conversation
-```powershell
-uv run llm --chat
-```
-Then type your questions. Type `exit` to quit.
+### Qdrant — for RAG knowledge base lookups
 
-### Example 3: Get Help with Code
-```powershell
-uv run llm "Write a Python function that calculates fibonacci numbers"
+```bash
+docker compose up -d qdrant
 ```
 
-### Example 4: Summarize a File
-```powershell
-Get-Content README.md | uv run llm
+Without these services CVA starts fine — sessions are in-memory only and RAG features are disabled.
+
+## 6. Run CVA
+
+```bash
+python main.py
 ```
 
-## Making it Easier to Use
+You should see the CVA banner and the `CVA ❯` prompt. Type `/help` for commands.
 
-### Option 1: Install Globally (Recommended)
+---
 
-```powershell
-cd d:\Projects\CVA
-uv pip install -e .
+## Using a Cloud LLM Instead of Ollama
+
+Edit `.env`:
+
+```dotenv
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
 ```
 
-Now the `llm` command is available everywhere:
-```powershell
-llm "What is AI?"
-llm --chat
+Supported providers: `ollama`, `openai`, `anthropic`, `google`.
+
+---
+
+## Common Issues
+
+| Issue | Fix |
+|---|---|
+| `Failed to initialize agent` | Start Ollama (`ollama serve`) or set a cloud provider |
+| `Failed to load MCP tools` | Run from the project root; ensure `src/mcp_server/kali.py` is present |
+| `MongoDB not available` | Normal — sessions are in-memory. Start MongoDB for persistence |
+| Missing security tool (nmap, etc.) | Install the tool on the host system |
+
+---
+
+## Project Layout
+
+```
+CVA/
+├── main.py             # Start here — the TUI entry point
+├── src/                # Application source
+├── config/             # YAML configuration files
+├── docs/               # Extended documentation
+├── tests/              # Test suite
+├── .env.example        # Environment variable template
+└── pyproject.toml      # Dependencies
 ```
 
-### Option 2: Add Alias to PowerShell Profile
-
-Edit your PowerShell profile:
-```powershell
-notepad $PROFILE
-```
-
-Add these functions:
-```powershell
-function llm { uv run --directory d:\Projects\CVA llm $args }
-function chat { uv run --directory d:\Projects\CVA llm --chat $args }
-```
-
-Save and reload:
-```powershell
-. $PROFILE
-```
-
-Now you can use:
-```powershell
-llm "What is AI?"
-chat
-```
-
-## Recommended Models by Use Case
-
-### General Chat
-- `llama2` (7B) - Fast, good for most tasks
-- `mistral` (7B) - Higher quality responses
-- `neural-chat` (7B) - Great for conversations
-
-### Coding
-- `codellama` (7B, 13B, 34B) - Best for code
-- `deepseek-coder` - Excellent code understanding
-
-### Fast & Light
-- `phi` (2.7B) - Very fast, smaller
-- `tinyllama` (1.1B) - Extremely fast
-
-### Advanced
-- `llama2:70b` - Highest quality (requires 64GB+ RAM)
-- `mixtral` (8x7B) - Excellent quality
-
-Install any model:
-```powershell
-ollama pull <model-name>
-```
-
-## Troubleshooting
-
-### Issue: "Cannot connect to Ollama"
-**Solution**: Make sure Ollama is running.
-```powershell
-ollama serve
-```
-
-### Issue: "Model not found"
-**Solution**: Pull the model first, then list available ones.
-```powershell
-ollama pull llama2
-uv run llm --list-models
-```
-
-### Issue: Slow responses
-**Solution**: Use a smaller model or override per-call settings.
-```powershell
-ollama pull phi
-uv run llm --model phi "Answer quickly"
-```
-
-## Next Steps
-
-1. Try different models to find what works best
-2. Set up aliases for faster access
-3. Enable MCP servers and run `uv run llm --list-tools`
-4. Explore chat mode for multi-turn workflows
-
-Enjoy your local, private AI assistant!
+See `README.md` for the full architecture diagram and command reference.
