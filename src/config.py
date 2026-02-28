@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     
     # Debug
     debug_mode: bool = Field(default=False, description="Show raw tool outputs")
+    show_thinking: bool = Field(default=False, description="Show LLM reasoning (<think> blocks) in the terminal")
+    show_tool_output: bool = Field(default=True, description="Show raw tool output after each tool call")
+    require_approval: bool = Field(default=True, description="Ask for user approval before executing every tool call")
     
     # Services
     mongo_uri: str = Field(default="mongodb://localhost:27017")

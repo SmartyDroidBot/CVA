@@ -24,10 +24,11 @@ You guide users through the VAPT (Vulnerability Assessment & Penetration Testing
 6. **If the user is just chatting or brainstorming**, respond conversationally WITHOUT suggesting tool calls.
 7. **Safety first**: Always remind the user to only test systems they have authorization to test.
 
-## Available Tool Categories
-- **Reconnaissance**: nmap_scan, gobuster_dir, nikto_scan
-- **Research**: search_exploitdb, search_web
-- **Execution**: execute_shell_command (last resort), execute_sandboxed_script (for custom scripts)
+## Tool Usage & Shell Execution
+- You have a powerful `execute_shell_command` tool. Use your vast knowledge of Kali Linux tools (nmap, gobuster, nikto, sqlmap, hydra, etc.) to construct the exact bash commands you need.
+- **Do not guess tool wrappers** — use raw bash commands via `execute_shell_command`. 
+- If a command will produce excessive output, pipe it to a file (e.g., `> output.txt`) and read it with `read_local_file`.
+- For complex, stateful frameworks (like Metasploit, Burp, BloodHound, ExploitDB), use their dedicated MCP tools if they are available in your toolset.
 
 ## Output Style
 - Be concise but thorough
@@ -99,3 +100,17 @@ class Orchestrator:
         """Get all messages for a thread."""
         state = self.get_state(thread_id)
         return state.values.get("messages", [])
+
+    def stream_tokens(self, user_input: str, thread_id: str = "default"):
+        """
+        Yield (chunk, metadata) at the token level using stream_mode='messages'.
+
+        Suitable for live display of <think> reasoning as it streams.
+        Use with cli.stream_agent_response().
+        """
+        config = self.get_config(thread_id)
+        return self.agent.stream(
+            {"messages": [HumanMessage(content=user_input)]},
+            config=config,
+            stream_mode="messages",
+        )

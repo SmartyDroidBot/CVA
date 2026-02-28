@@ -1,6 +1,30 @@
-shell:
-  command: "uv"
-  args:
-    - "run"
-    - "cva-mcp-shell"
-  enabled: true
+# CVA MCP Servers Configuration
+# 
+# This file defines the MCP (Model Context Protocol) servers that CVA loads on startup.
+# CVA uses a hybrid approach:
+#   - Stateless tools (nmap, gobuster) are run via the generic `execute_shell_command` in cva_core.
+#   - Stateful/Complex tools are loaded as dedicated MCP servers below.
+#
+# If a server allows `npx` or `uvx`, CVA will automatically install and run it.
+
+mcp_servers:
+  # ── Internal Core ──
+  cva_core:
+    command: "python"
+    args: ["src/mcp_server/kali.py"]
+    description: "Generic shell execution and local file reading"
+
+  # ── External Community Servers ──
+  # 
+  # CVA uses `uvx` to load robust Python-based MCP servers from the official MCP registry.
+  
+  fetch:
+    command: "uvx"
+    args: ["mcp-server-fetch"]
+    description: "Fetch web pages and convert them to markdown for the LLM"
+    
+  sqlite:
+    command: "uvx"
+    args: ["mcp-server-sqlite", "--db-path", "test.db"]
+    description: "Interact with local SQLite databases"
+
