@@ -12,6 +12,9 @@ class CommandHandler:
         "/help": "Show all available commands",
         "/model": "Switch LLM model. Usage: /model ollama:qwen3:8b",
         "/debug": "Toggle debug mode. Usage: /debug on|off",
+        "/think": "Show/hide LLM reasoning. Usage: /think on|off",
+        "/rawtools": "Show/hide raw tool output. Usage: /rawtools on|off",
+        "/approval": "Toggle tool approval gate. Usage: /approval on|off",
         "/tools": "List all available MCP tools",
         "/sessions": "Manage sessions. Usage: /sessions [list|new|load <id>|save|delete <id>]",
         "/run": "Execute a raw shell command. Usage: /run <command>",
@@ -57,6 +60,9 @@ class CommandHandler:
             "/help": lambda: (self._help(), None),
             "/model": lambda: (self._model(args), None),
             "/debug": lambda: (self._debug(args), None),
+            "/think": lambda: (self._think(args), None),
+            "/rawtools": lambda: (self._rawtools(args), None),
+            "/approval": lambda: (self._approval(args), None),
             "/tools": lambda: (self._list_tools(), None),
             "/settings": lambda: (self._settings(), None),
             "/run": lambda: (self._run(args), "run_result"),
@@ -115,6 +121,39 @@ class CommandHandler:
         else:
             status = "ON" if settings.debug_mode else "OFF"
             return f"Debug mode: {status}\nUsage: /debug on|off"
+
+    def _think(self, args: str) -> str:
+        if args.lower() in ("on", "true", "1", "show"):
+            settings.show_thinking = True
+            return "✓ Thinking display ON — LLM reasoning blocks will be shown"
+        elif args.lower() in ("off", "false", "0", "hide"):
+            settings.show_thinking = False
+            return "✓ Thinking display OFF — reasoning runs silently"
+        else:
+            status = "ON" if settings.show_thinking else "OFF"
+            return f"Thinking display: {status}\nUsage: /think on|off"
+
+    def _rawtools(self, args: str) -> str:
+        if args.lower() in ("on", "true", "1", "show"):
+            settings.show_tool_output = True
+            return "✓ Raw tool output ON — full output shown after each tool call"
+        elif args.lower() in ("off", "false", "0", "hide"):
+            settings.show_tool_output = False
+            return "✓ Raw tool output OFF — only a brief summary shown"
+        else:
+            status = "ON" if settings.show_tool_output else "OFF"
+            return f"Raw tool output: {status}\nUsage: /rawtools on|off"
+
+    def _approval(self, args: str) -> str:
+        if args.lower() in ("on", "true", "1", "enable"):
+            settings.require_approval = True
+            return "✓ Approval gate ON — every tool call will require your authorisation"
+        elif args.lower() in ("off", "false", "0", "disable"):
+            settings.require_approval = False
+            return "✓ Approval gate OFF — tools execute automatically"
+        else:
+            status = "ON" if settings.require_approval else "OFF"
+            return f"Tool approval gate: {status}\nUsage: /approval on|off"
     
     def _list_tools(self) -> str:
         if not self.tools:
@@ -160,6 +199,9 @@ class CommandHandler:
             f"  Model:      {settings.ollama_model}\n"
             f"  Ollama URL: {settings.ollama_base_url}\n"
             f"  Debug:      {'ON' if settings.debug_mode else 'OFF'}\n"
+            f"  Thinking:   {'ON' if settings.show_thinking else 'OFF'}\n"
+            f"  Raw tools:  {'ON' if settings.show_tool_output else 'OFF'}\n"
+            f"  Approval:   {'ON' if settings.require_approval else 'OFF'}\n"
             f"{target_info}"
             f"{session_info}"
             f"  MongoDB:    {settings.mongo_uri}\n"

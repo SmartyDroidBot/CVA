@@ -40,6 +40,46 @@ def extract_last_response(messages: list) -> tuple:
     return last_ai_content, tool_calls, tool_results
 
 
+def _apply_approval_gate(tools: list) -> list:
+    """Wrap every tool so the user must approve before it executes.
+
+    The gate re-checks settings.require_approval at call-time, so
+    /approval on|off takes effect immediately without a restart.
+    """
+    from langchain_core.tools import StructuredTool
+
+    gated = []
+    for tool in tools:
+        original_func = tool.func
+
+        def _gated_func(*args, _name=tool.name, _fn=original_func, **kwargs):
+            if settings.require_approval:
+                decision = cli.get_tool_approval(_name, kwargs)
+                if decision == "approve":
+                    return _fn(*args, **kwargs)
+                elif decision == "skip":
+                    return (
+                        f"[Tool '{_name}' was denied by the user. "
+                        "Do not retry this call. Ask the user how to proceed.]"
+                    )
+                else:
+                    # Custom feedback — return as the tool 'result' so the agent sees it
+                    return (
+                        f"[User overrode '{_name}' with feedback]: {decision}"
+                    )
+            # Approval gate off — run directly
+            return _fn(*args, **kwargs)
+
+        gated.append(StructuredTool(
+            name=tool.name,
+            description=tool.description,
+            args_schema=tool.args_schema,
+            func=_gated_func,
+            return_direct=getattr(tool, "return_direct", False),
+        ))
+    return gated
+
+
 def main():
     """Main CVA loop."""
     cli.print_banner()
@@ -48,6 +88,7 @@ def main():
     cli.print_status("Loading MCP tools...")
     try:
         tools = get_mcp_tools()
+        tools = _apply_approval_gate(tools)
         cli.print_info(f"Loaded {len(tools)} tools: {', '.join(t.name for t in tools)}")
     except Exception as e:
         cli.print_error(f"Failed to load MCP tools: {e}")
@@ -148,13 +189,22 @@ def main():
                 progress_ctx = task_tree.get_context_for_agent()
                 if progress_ctx:
                     enhanced_input = f"{progress_ctx}\n\nUser: {user_input}"
-                
-                result = orchestrator.invoke(enhanced_input, thread_id=thread_id)
-                messages = result.get("messages", [])
-                
-                # Extract response components
-                last_content, tool_calls, tool_results = extract_last_response(messages)
-                
+
+                if settings.show_thinking:
+                    # ── Streaming path — <think> tokens printed live ───────
+                    stream_result = cli.stream_agent_response(
+                        orchestrator.stream_tokens(enhanced_input, thread_id=thread_id)
+                    )
+                    last_content = stream_result["content"]
+                    tool_results = stream_result["tool_results"]
+                    messages     = orchestrator.get_messages(thread_id)
+                    tool_calls   = []
+                else:
+                    # ── Batch path — existing behaviour ───────────────────
+                    result = orchestrator.invoke(enhanced_input, thread_id=thread_id)
+                    messages = result.get("messages", [])
+                    last_content, tool_calls, tool_results = extract_last_response(messages)
+
                 # Track tool calls in task tree
                 for tr in tool_results:
                     task_tree.add_action(
@@ -169,15 +219,15 @@ def main():
                             f"tool:{tr['name']}",
                             tr["content"][:500] if tr["content"] else "",
                         )
-                
+
                 # Display tool results in debug mode
                 for tr in tool_results:
                     cli.print_tool_result(tr["name"], tr["content"])
-                
+
                 # Display agent response
                 if last_content:
                     cli.print_agent_response(last_content)
-                
+
                 # Auto-summarize if needed
                 if summarizer.should_summarize(messages):
                     cli.print_status("Compressing context...")
@@ -187,7 +237,7 @@ def main():
                             cmd_handler.current_session_id, summary_text
                         )
                         cli.print_info("Context summarized and saved.")
-                
+
             except Exception as e:
                 cli.print_error(f"Agent error: {e}")
                 if settings.debug_mode:
@@ -197,8 +247,19 @@ def main():
             cli.print_separator()
             
         except KeyboardInterrupt:
-            cli.print_info("\nUse /exit to quit.")
-            continue
+            # Ctrl+C during agent inference or anywhere outside the prompt
+            cli.print_status("")
+            cli.print_info("Interrupted.")
+            # Auto-save before exit
+            if session_store and cmd_handler.current_session_id:
+                try:
+                    messages = orchestrator.get_messages(thread_id)
+                    session_store.save_messages(cmd_handler.current_session_id, messages)
+                    cli.print_info(f"Session {cmd_handler.current_session_id} auto-saved.")
+                except Exception:
+                    pass
+            cli.print_info("Goodbye!")
+            break
     
     # Cleanup
     if session_store:
