@@ -63,14 +63,31 @@ class IntelligentParser:
             
             content = strip_thinking(response.content)
             
-            # Extract JSON from response
             import json
             import re
             
-            # Try to find JSON block in response
-            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
+            # Strategy 1: Extract from ```json code fence
+            fence_match = re.search(r'```(?:json)?\s*\n?(.*?)\n?\s*```', content, re.DOTALL)
+            if fence_match:
+                try:
+                    return json.loads(fence_match.group(1).strip())
+                except json.JSONDecodeError:
+                    pass
+            
+            # Strategy 2: Find outermost { ... } with brace counting
+            start = content.find('{')
+            if start != -1:
+                depth = 0
+                for i in range(start, len(content)):
+                    if content[i] == '{':
+                        depth += 1
+                    elif content[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            try:
+                                return json.loads(content[start:i + 1])
+                            except json.JSONDecodeError:
+                                break
             
             return {"key_findings": [content[:500]], "raw": True}
             

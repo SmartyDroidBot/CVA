@@ -94,12 +94,12 @@ def test_system():
         results["mongodb"] = f"FAIL: {e}"
     
     # ── 6. Qdrant ──
-    console.print("\n[bold]TEST 6: Qdrant Static KB[/bold]")
+    console.print("\n[bold]TEST 6: Qdrant Vector KB[/bold]")
     try:
-        from src.knowledge.static_kb import StaticKB
-        kb = StaticKB()
+        from src.knowledge.vector_kb import VectorKB
+        kb = VectorKB()
         stats = kb.get_stats()
-        console.print(f"  ✓ Status: {stats.get('status', 'unknown')}, Points: {stats.get('points_count', '?')}")
+        console.print(f"  ✓ Status: {stats.get('status', 'unknown')}, Points: {stats.get('points', '?')}")
         results["qdrant"] = "PASS"
     except Exception as e:
         console.print(f"  ✗ {e}")

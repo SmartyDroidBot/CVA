@@ -139,11 +139,13 @@ class TaskTree:
     
     def get_context_for_agent(self) -> str:
         """Generate a context string to inject into agent prompt."""
-        if not self.nodes:
-            return ""
-        
         lines = [f"[PENTEST PROGRESS] Target: {self.target}"]
         lines.append(f"Current Phase: {self.current_phase.value.replace('_', ' ').title()}")
+        
+        if not self.nodes:
+            lines.append("Actions so far: 0 (No actions taken yet)")
+            return "\n".join(lines)
+            
         lines.append(f"Actions so far: {len(self.nodes)}")
         
         # Last 5 actions

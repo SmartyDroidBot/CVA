@@ -5,7 +5,7 @@
 #   - Stateless tools (nmap, gobuster) are run via the generic `execute_shell_command` in cva_core.
 #   - Stateful/Complex tools are loaded as dedicated MCP servers below.
 #
-# If a server allows `npx` or `uvx`, CVA will automatically install and run it.
+# Set `enabled: false` to skip loading a server without removing its config.
 
 mcp_servers:
   # ── Internal Core ──
@@ -13,18 +13,18 @@ mcp_servers:
     command: "python"
     args: ["src/mcp_server/kali.py"]
     description: "Generic shell execution and local file reading"
+    enabled: true
 
-  # ── External Community Servers ──
-  # 
-  # CVA uses `uvx` to load robust Python-based MCP servers from the official MCP registry.
-  
-  fetch:
-    command: "uvx"
-    args: ["mcp-server-fetch"]
-    description: "Fetch web pages and convert them to markdown for the LLM"
-    
-  sqlite:
-    command: "uvx"
-    args: ["mcp-server-sqlite", "--db-path", "test.db"]
-    description: "Interact with local SQLite databases"
+  exploitdb:
+    command: "python"
+    args: ["src/mcp_server/exploitdb.py"]
+    description: "Search and retrieve PoCs from ExploitDB"
+    enabled: true
 
+  metasploit:
+    command: "node"
+    args: ["node_modules/metasploit-mcp-server/src/index.js"]
+    env:
+      MSF_PASSWORD: "msf"
+    description: "Metasploit RPC integration for exploits and sessions"
+    enabled: false  # Enable when msfrpcd is running
