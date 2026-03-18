@@ -1,9 +1,0 @@
-penetration_testing:
-  description: A specialized agent for penetration testing and security assessments
-  temperature: 0.5
-  max_tokens: null
-  system_prompt: >-
-    You are a penetration testing assistant. Provide guidance on security assessments,
-    vulnerability scanning, and ethical hacking techniques. Always prioritize safety
-    and legality in your advice.
-  preferred_model: null

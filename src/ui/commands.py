@@ -1,8 +1,10 @@
-"""Slash command handler for CVA CLI — enhanced with reporting, progress, sessions."""
+"""Slash command handler for CVA CLI — enhanced with reporting, progress, sessions, logging."""
 
 import subprocess
 from typing import Optional, Tuple
 from src.config import settings
+from src.orchestrator import THREAD_ID
+from src.memory.session_logger import SessionLogger
 
 
 class CommandHandler:
@@ -22,18 +24,23 @@ class CommandHandler:
         "/progress": "Show VAPT phase progress and task tree",
         "/findings": "Show all findings from current session",
         "/target": "Set the target. Usage: /target <ip/url>",
+        "/log": "View current session log. Usage: /log [tail N]",
+        "/kb": "Knowledge base. Usage: /kb [status|search <query>|update]",
         "/settings": "Show current settings",
         "/clear": "Clear the screen",
         "/exit": "Exit CVA",
     }
     
     def __init__(self, orchestrator=None, tools=None,
-                 session_store=None, task_tree=None, report_gen=None):
+                 session_store=None, task_tree=None, report_gen=None,
+                 session_logger: SessionLogger = None, vector_kb=None):
         self.orchestrator = orchestrator
         self.tools = tools or []
         self.session_store = session_store
         self.task_tree = task_tree
         self.report_gen = report_gen
+        self.vector_kb = vector_kb
+        self.session_logger = session_logger or SessionLogger()
         self.current_session_id = None
     
     def is_command(self, text: str) -> bool:
@@ -74,6 +81,8 @@ class CommandHandler:
             "/progress": lambda: (self._progress(), None),
             "/findings": lambda: (self._findings(), None),
             "/target": lambda: (self._set_target(args), None),
+            "/log": lambda: (self._log(args), None),
+            "/kb": lambda: (self._kb(args), None),
         }
         
         handler = handlers.get(cmd)
@@ -166,7 +175,7 @@ class CommandHandler:
             "Vulnerability": ["nikto_scan", "search_exploitdb"],
             "Exploitation": ["sqlmap_scan", "hydra_bruteforce", "execute_sandboxed_script"],
             "Research": ["search_web"],
-            "Utility": ["execute_shell_command", "hash_identify"],
+            "Utility": ["execute_shell_command", "hash_identify", "read_local_file"],
         }
         
         lines = ["╔══ Available Tools ══╗"]
@@ -193,6 +202,7 @@ class CommandHandler:
     def _settings(self) -> str:
         session_info = f"  Session:    {self.current_session_id or 'none'}\n"
         target_info = f"  Target:     {self.task_tree.target if self.task_tree else 'not set'}\n"
+        log_info = f"  Log file:   {self.session_logger.log_path or 'none'}\n"
         return (
             f"╔══ CVA Settings ══╗\n"
             f"  Provider:   {settings.llm_provider}\n"
@@ -204,8 +214,8 @@ class CommandHandler:
             f"  Approval:   {'ON' if settings.require_approval else 'OFF'}\n"
             f"{target_info}"
             f"{session_info}"
+            f"{log_info}"
             f"  MongoDB:    {settings.mongo_uri}\n"
-            f"  Qdrant:     {settings.qdrant_host}:{settings.qdrant_port}\n"
             f"  Sandbox:    {'enabled' if settings.sandbox_enabled else 'disabled'}\n"
             f"╚══════════════════╝"
         )
@@ -254,7 +264,9 @@ class CommandHandler:
             name = subarg or None
             sid = self.session_store.create_session(name)
             self.current_session_id = sid
-            return f"✓ Created session: {sid} ({name or 'unnamed'})"
+            self.session_logger.switch_session(sid)
+            self.session_logger.log_event("session", f"New session created: {sid} ({name or 'unnamed'})")
+            return f"✓ Created session: {sid} ({name or 'unnamed'})\n  Log: {self.session_logger.log_path}"
         
         elif subcmd == "load":
             if not subarg:
@@ -266,21 +278,45 @@ class CommandHandler:
             target = session.get("target", "")
             if target and self.task_tree:
                 self.task_tree.target = target
-            msg_count = len(session.get("messages", []))
-            return f"✓ Loaded session: {subarg} ({msg_count} messages, target: {target or 'none'})"
+            if target and self.report_gen:
+                self.report_gen.target = target
+            
+            # Switch logger to this session
+            self.session_logger.switch_session(subarg)
+            self.session_logger.log_event("session", f"Session loaded: {subarg}")
+            
+            # Restore messages into the agent's checkpointer
+            saved_msgs = session.get("messages", [])
+            if saved_msgs and self.orchestrator:
+                from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+                restored = []
+                for m in saved_msgs:
+                    msg_type = m.get("type", "human")
+                    content = m.get("content", "")
+                    if msg_type == "human":
+                        restored.append(HumanMessage(content=content))
+                    elif msg_type == "ai":
+                        restored.append(AIMessage(content=content))
+                    elif msg_type == "system":
+                        restored.append(SystemMessage(content=content))
+                if restored:
+                    self.orchestrator.update_messages(restored, THREAD_ID)
+            
+            msg_count = len(saved_msgs)
+            return f"✓ Loaded session: {subarg} ({msg_count} messages, target: {target or 'none'})\n  Log: {self.session_logger.log_path}"
         
         elif subcmd == "save":
             if not self.current_session_id:
                 return "No active session. Use: /sessions new"
             if self.orchestrator:
-                messages = self.orchestrator.get_messages()
+                messages = self.orchestrator.get_messages(THREAD_ID)
                 self.session_store.save_messages(self.current_session_id, messages)
                 if self.task_tree:
-                    from pymongo import MongoClient
                     self.session_store.sessions.update_one(
                         {"_id": self.current_session_id},
                         {"$set": {"target": self.task_tree.target}}
                     )
+            self.session_logger.log_event("session", "Session saved")
             return f"✓ Session {self.current_session_id} saved."
         
         elif subcmd in ("delete", "rm"):
@@ -310,8 +346,18 @@ class CommandHandler:
             if self.task_tree:
                 self.report_gen.target = self.task_tree.target
             
-            saved = self.report_gen.save(fmt=fmt)
+            # Use session-linked report path if available
+            if self.current_session_id:
+                output_dir = "reports"
+                base_name = SessionLogger.get_report_path(self.current_session_id)
+                # Save with session-linked filename
+                saved = self.report_gen.save(output_dir=output_dir, fmt=fmt,
+                                             base_name=f"session_{self.current_session_id}")
+            else:
+                saved = self.report_gen.save(fmt=fmt)
+            
             paths = "\n".join(f"  → {p}" for p in saved)
+            self.session_logger.log_event("report", f"Report generated: {', '.join(saved)}")
             return f"✓ Report generated:\n{paths}\n\n  {len(self.report_gen.findings)} findings, {len(self.report_gen.raw_evidence)} evidence items."
         except Exception as e:
             return f"✗ Report generation failed: {e}"
@@ -335,4 +381,80 @@ class CommandHandler:
             self.task_tree.target = args.strip()
         if self.report_gen:
             self.report_gen.target = args.strip()
+        self.session_logger.log_event("target", f"Target set to: {args.strip()}")
         return f"✓ Target set to: {args.strip()}"
+    
+    def _log(self, args: str) -> str:
+        """View current session log."""
+        if not self.session_logger.session_id:
+            return "No active session. Use /sessions new to start one."
+        
+        tail = 50
+        if args.strip():
+            try:
+                parts = args.strip().split()
+                if parts[0].lower() == "tail" and len(parts) > 1:
+                    tail = int(parts[1])
+                else:
+                    tail = int(parts[0])
+            except (ValueError, IndexError):
+                pass
+        
+        return self.session_logger.get_log_contents(tail=tail)
+
+    def _kb(self, args: str) -> str:
+        """Knowledge base management."""
+        parts = args.strip().split(maxsplit=1) if args.strip() else ["status"]
+        subcmd = parts[0].lower()
+        subarg = parts[1] if len(parts) > 1 else ""
+
+        if subcmd == "status":
+            if not self.vector_kb:
+                return "Vector KB not initialized."
+            stats = self.vector_kb.get_stats()
+            return (
+                f"╔══ Knowledge Base ══╗\n"
+                f"  Status:     {stats.get('status', 'unknown')}\n"
+                f"  Collection: {stats.get('collection', 'n/a')}\n"
+                f"  Chunks:     {stats.get('points', 0)}\n"
+                f"  Vectors:    {stats.get('vectors_count', 0)}\n"
+                f"╚════════════════════╝"
+            )
+
+        elif subcmd == "search":
+            if not subarg:
+                return "Usage: /kb search <query>"
+            if not self.vector_kb or not self.vector_kb.available:
+                return "Vector KB unavailable. Run: python scripts/ingest_kb.py"
+            results = self.vector_kb.search(subarg, limit=5)
+            if not results:
+                return f"No results for: {subarg}"
+            lines = [f"╔══ KB Search: '{subarg}' ══╗"]
+            for i, r in enumerate(results, 1):
+                source = r["source"]
+                section = r.get("section", "")[:40]
+                score = r["score"]
+                text = r["text"][:150].replace("\n", " ")
+                lines.append(f"\n  [{i}] ({source}) {section} [score: {score:.3f}]")
+                lines.append(f"      {text}...")
+            lines.append(f"\n╚══ {len(results)} results ══╝")
+            return "\n".join(lines)
+
+        elif subcmd in ("update", "ingest"):
+            import subprocess as sp
+            try:
+                result = sp.run(
+                    ["python", "scripts/ingest_kb.py", "--skip-clone"],
+                    capture_output=True, text=True, timeout=600,
+                    cwd=str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent),
+                )
+                output = result.stdout[-500:] if result.stdout else ""
+                if result.returncode != 0:
+                    output += f"\n[stderr]: {result.stderr[-200:]}"
+                return f"KB update complete:\n{output}"
+            except Exception as e:
+                return f"KB update failed: {e}"
+
+        else:
+            return f"Unknown /kb subcommand: {subcmd}\nUsage: /kb [status|search <query>|update]"
+

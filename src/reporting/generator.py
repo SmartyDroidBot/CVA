@@ -251,12 +251,23 @@ class ReportGenerator:
 </html>'''
         return html
     
-    def save(self, output_dir: str = "reports", fmt: str = "both") -> List[str]:
-        """Save report to files. Returns list of saved paths."""
+    def save(self, output_dir: str = "reports", fmt: str = "both", base_name: str = None) -> List[str]:
+        """Save report to files. Returns list of saved paths.
+
+        Args:
+            output_dir: Directory to save reports in.
+            fmt: Format — 'md', 'html', or 'both'.
+            base_name: Fixed base filename (without extension). If provided,
+                       the same file is overwritten on each save, enabling
+                       incremental report updates within a session.
+        """
         os.makedirs(output_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        target_slug = self.target.replace(".", "_").replace("/", "_").replace(":", "_")[:30]
-        base = f"pentest_{target_slug}_{timestamp}"
+        if base_name:
+            base = base_name
+        else:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            target_slug = self.target.replace(".", "_").replace("/", "_").replace(":", "_")[:30]
+            base = f"pentest_{target_slug}_{timestamp}"
         
         saved = []
         

@@ -38,6 +38,8 @@ SLASH_COMMANDS = {
     "/progress":  "Show VAPT phase progress",
     "/findings":  "Show all findings from current session",
     "/target":    "Set the pentest target  e.g. /target 192.168.1.1",
+    "/log":       "View current session log  /log [tail N]",
+    "/kb":        "Knowledge base  /kb [status|search|update]",
     "/settings":  "Show current settings",
     "/clear":     "Clear the screen",
     "/exit":      "Exit CVA",
@@ -219,14 +221,15 @@ def _looks_like_error(text: str) -> bool:
 def _render_tool_output(result: str) -> Text:
     """Render tool output text, highlighting lines that look like errors."""
     snippet = result[:5000]
-    overflow = f"\n... ({len(result) - 5000} more chars)" if len(result) > 5000 else ""
-    rendered = Text(overflow, style="dim")
+    rendered = Text()
     for line in snippet.splitlines(keepends=True):
         low = line.lower()
         if any(sig in low for sig in _ERROR_SIGNALS):
             rendered.append(line, style="bold red")
         else:
             rendered.append(line, style="dim")
+    if len(result) > 5000:
+        rendered.append(f"\n... ({len(result) - 5000} more chars)", style="dim")
     return rendered
 
 
@@ -310,9 +313,9 @@ def print_info(message: str):
     console.print(f"  [dim cyan]ℹ {message}[/dim cyan]")
 
 
-def print_status(message: str):
+def print_status(message: str, style: str = "dim"):
     """Display a status message."""
-    console.print(f"  [dim]{message}[/dim]")
+    console.print(f"  [{style}]{message}[/{style}]")
 
 
 def print_success(message: str):

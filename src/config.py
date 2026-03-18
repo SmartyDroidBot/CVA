@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     mongo_db: str = Field(default="cva_db")
     qdrant_host: str = Field(default="localhost")
     qdrant_port: int = Field(default=6333)
+    embedding_model: str = Field(default="nomic-embed-text", description="Ollama model for KB embeddings")
+    kb_collection: str = Field(default="cva_kb", description="Qdrant collection name for KB")
     
     # Sandbox
     sandbox_enabled: bool = Field(default=True)
