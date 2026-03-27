@@ -1,13 +1,16 @@
 """MCP Client — bridges multiple MCP servers to LangChain StructuredTools.
 
-Uses persistent subprocess connections that stay alive across tool invocations.
+Uses a dedicated background thread with its own event loop for all async MCP
+operations, avoiding nest_asyncio conflicts with Python 3.13.
 """
 
 import asyncio
 import atexit
 import os
 import sys
+import threading
 import yaml
+from contextlib import AsyncExitStack
 from typing import List, Optional, Dict, Any, Tuple
 
 from langchain_core.tools import StructuredTool
@@ -15,30 +18,40 @@ from pydantic import create_model
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
-import nest_asyncio
 
 from src.ui import cli
 
-# Allow nested event loops (needed for LangGraph sync → async bridge)
-nest_asyncio.apply()
 
-# Shared event loop for all MCP operations
-_loop: Optional[asyncio.AbstractEventLoop] = None
+# ── Dedicated event loop thread ───────────────────────────────────────────────
+# All async MCP operations run in this single background thread to avoid
+# asyncio context conflicts in Python 3.13.
+
+_LOOP: Optional[asyncio.AbstractEventLoop] = None
+_LOOP_THREAD: Optional[threading.Thread] = None
+_LOOP_LOCK = threading.Lock()
 
 
 def _get_loop() -> asyncio.AbstractEventLoop:
-    """Get or create the shared event loop for MCP operations."""
-    global _loop
-    if _loop is None or _loop.is_closed():
-        _loop = asyncio.new_event_loop()
-    return _loop
+    """Get (or create) the dedicated background event loop."""
+    global _LOOP, _LOOP_THREAD
+    with _LOOP_LOCK:
+        if _LOOP is None or _LOOP.is_closed():
+            _LOOP = asyncio.new_event_loop()
+            _LOOP_THREAD = threading.Thread(
+                target=_LOOP.run_forever, daemon=True, name="cva-mcp-loop"
+            )
+            _LOOP_THREAD.start()
+        return _LOOP
 
 
-def _run_async(coro):
-    """Run an async coroutine in the shared event loop."""
+def _run_async(coro, timeout: float = 120.0):
+    """Submit a coroutine to the background event loop and block until done."""
     loop = _get_loop()
-    return loop.run_until_complete(coro)
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return future.result(timeout=timeout)
 
+
+# ── MCP Client ────────────────────────────────────────────────────────────────
 
 class McpClient:
     """Connects to a single MCP server and keeps a persistent connection."""
@@ -49,48 +62,30 @@ class McpClient:
         self.args = config.get("args", [])
         self.env_overrides = config.get("env", {})
         self.enabled = config.get("enabled", True)
-        self._server_params = None
-        # Persistent connection state
+        self._server_params: Optional[StdioServerParameters] = None
         self._session: Optional[ClientSession] = None
-        self._cm_stack = None  # context manager stack for cleanup
+        self._cm_stack: Optional[AsyncExitStack] = None
 
     def _get_server_params(self) -> StdioServerParameters:
-        """Create server params for this specific MCP integration."""
         if self._server_params is None:
             env = os.environ.copy()
-            env["PATH"] = env.get("PATH", "")
             for k, v in self.env_overrides.items():
                 env[k] = str(v)
-
-            cmd = self.command
-            if cmd == "python":
-                cmd = sys.executable
-
+            cmd = sys.executable if self.command == "python" else self.command
             self._server_params = StdioServerParameters(
-                command=cmd,
-                args=self.args,
-                env=env,
+                command=cmd, args=self.args, env=env
             )
         return self._server_params
 
-    async def connect_and_load(self) -> Tuple[str, List[StructuredTool]]:
-        """Connect to MCP server, discover tools, and wrap them.
-
-        The connection is kept alive for future tool calls.
-        """
+    async def _connect_and_load(self) -> Tuple[str, List[StructuredTool]]:
+        """Async: connect, discover tools, keep connection alive."""
         if not self.enabled:
             return self.name, []
 
-        params = self._get_server_params()
-        tools = []
-
         try:
-            # We need to keep the context managers alive, so we use
-            # contextlib.AsyncExitStack-style manual management
-            from contextlib import AsyncExitStack
             self._cm_stack = AsyncExitStack()
             read, write = await self._cm_stack.enter_async_context(
-                stdio_client(params)
+                stdio_client(self._get_server_params())
             )
             self._session = await self._cm_stack.enter_async_context(
                 ClientSession(read, write)
@@ -98,159 +93,124 @@ class McpClient:
             await self._session.initialize()
             mcp_tools = await self._session.list_tools()
 
-            for tool in mcp_tools.tools:
-                tools.append(self._convert_to_langchain(tool))
+            tools = [self._to_langchain(t) for t in mcp_tools.tools]
             return self.name, tools
         except Exception as e:
-            cli.print_status(f"Error loading MCP server '{self.name}': {e}", style="bold red")
+            cli.print_status(f"MCP server '{self.name}' failed: {e}", style="bold red")
             await self._cleanup()
             return self.name, []
 
-    def _convert_to_langchain(self, tool_info: Any) -> StructuredTool:
-        """Convert an MCP tool definition to a LangChain StructuredTool."""
-        tool_name = tool_info.name
-        tool_desc = tool_info.description or "No description."
+    def connect_and_load(self) -> Tuple[str, List[StructuredTool]]:
+        """Synchronous wrapper — blocks until server is connected."""
+        return _run_async(self._connect_and_load(), timeout=30.0)
 
-        # Build Pydantic model from JSON Schema
-        input_schema = tool_info.inputSchema
-        fields = {}
+    def _to_langchain(self, tool_info: Any) -> StructuredTool:
+        """Convert an MCP tool to a LangChain StructuredTool."""
+        name = tool_info.name
+        desc = tool_info.description or "No description."
+        schema = tool_info.inputSchema
+        fields: dict = {}
 
-        if "properties" in input_schema:
-            required = input_schema.get("required", [])
-            for prop_name, prop_def in input_schema["properties"].items():
-                p_type = str
-                json_type = prop_def.get("type", "string")
-                if json_type == "integer":
-                    p_type = int
-                elif json_type == "boolean":
-                    p_type = bool
-                elif json_type == "number":
-                    p_type = float
+        if "properties" in schema:
+            required = schema.get("required", [])
+            for prop, defn in schema["properties"].items():
+                jtype = defn.get("type", "string")
+                ptype = {
+                    "string": str, "integer": int, "number": float,
+                    "boolean": bool, "array": list, "object": dict,
+                }.get(jtype, str)
+                fields[prop] = (ptype, ...) if prop in required else (Optional[ptype], None)
 
-                if prop_name in required:
-                    fields[prop_name] = (p_type, ...)
-                else:
-                    fields[prop_name] = (Optional[p_type], None)
-
-        args_model = create_model(f"{tool_name}Input", **fields)
-
-        # Closure to execute tool via persistent connection, with reconnect fallback
+        model = create_model(f"{name}Input", **fields)
         client_ref = self
 
         def run_tool(**kwargs):
-            return _run_async(client_ref._execute_tool(tool_name, kwargs))
+            return _run_async(client_ref._execute_tool(name, kwargs))
 
         return StructuredTool.from_function(
-            func=run_tool,
-            name=tool_name,
-            description=tool_desc,
-            args_schema=args_model,
+            func=run_tool, name=name, description=desc, args_schema=model
         )
 
     async def _execute_tool(self, tool_name: str, args: Dict[str, Any]) -> str:
-        """Execute a single tool call via the persistent session.
-
-        Falls back to a fresh connection if the persistent session is dead.
-        """
-        # Try persistent session first
+        """Execute a tool via the persistent session, reconnecting if needed."""
         if self._session is not None:
             try:
                 result = await self._session.call_tool(tool_name, args)
-                return self._format_result(result)
+                return self._format(result)
             except Exception:
-                # Session died — try fresh connection
                 await self._cleanup()
 
         # Fallback: one-shot connection
         try:
-            params = self._get_server_params()
-            async with stdio_client(params) as (read, write):
-                async with ClientSession(read, write) as session:
+            async with stdio_client(self._get_server_params()) as (r, w):
+                async with ClientSession(r, w) as session:
                     await session.initialize()
                     result = await session.call_tool(tool_name, args)
-                    return self._format_result(result)
+                    return self._format(result)
         except Exception as e:
-            return f"Failed to execute {tool_name} on {self.name}: {e}"
+            return f"Tool execution failed [{self.name}/{tool_name}]: {e}"
 
-    def _format_result(self, result) -> str:
-        """Format an MCP tool result into a string."""
-        output_text = ""
+    def _format(self, result) -> str:
+        parts = []
         if result.content:
-            for content in result.content:
-                if content.type == "text":
-                    output_text += content.text
-        if result.isError:
-            return f"Error from {self.name}: {output_text}"
-        return output_text
+            for c in result.content:
+                if c.type == "text":
+                    parts.append(c.text)
+        output = "\n".join(parts)
+        return f"Error: {output}" if result.isError else output
 
     async def _cleanup(self):
-        """Close the persistent connection."""
-        if self._cm_stack is not None:
+        if self._cm_stack:
             try:
                 await self._cm_stack.aclose()
             except Exception:
                 pass
-            self._cm_stack = None
-            self._session = None
+        self._cm_stack = None
+        self._session = None
 
 
-# ── Module-level registry ────────────────────────────────────────────────────
+# ── Module-level registry ─────────────────────────────────────────────────────
 
 _clients: List[McpClient] = []
 
 
-async def _load_all_servers() -> List[StructuredTool]:
-    """Parse config/mcp_servers.yaml and load all servers concurrently."""
+def get_mcp_tools() -> List[StructuredTool]:
+    """Load all enabled MCP servers and return their tools as LangChain tools."""
     global _clients
 
     config_path = "config/mcp_servers.yaml"
     if not os.path.exists(config_path):
-        cli.print_status("MCP config not found, loading defaults.", style="yellow")
-        servers = {"cva_core": {"command": "python", "args": ["src/mcp_server/kali.py"]}}
+        servers = {"cva_core": {"command": "python", "args": ["src/mcp_server/kali.py"], "enabled": True}}
     else:
         with open(config_path, "r") as f:
-            yaml_content = yaml.safe_load(f)
-            servers = yaml_content.get("mcp_servers", {})
+            servers = yaml.safe_load(f).get("mcp_servers", {})
 
-    all_tools = []
-    tasks = []
-
-    for name, srv_config in servers.items():
-        client = McpClient(name, srv_config)
+    all_tools: List[StructuredTool] = []
+    for name, config in servers.items():
+        if not config.get("enabled", True):
+            continue
+        client = McpClient(name, config)
         _clients.append(client)
-        tasks.append(client.connect_and_load())
-
-    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-    for res in results:
-        if isinstance(res, tuple):
-            server_name, tools = res
+        try:
+            server_name, tools = client.connect_and_load()
             if tools:
                 cli.print_status(f"Loaded MCP server: {server_name} ({len(tools)} tools)")
             all_tools.extend(tools)
-        elif isinstance(res, Exception):
-            cli.print_status(f"Unexpected error loading MCP server: {res}", style="bold red")
+        except Exception as e:
+            cli.print_status(f"Failed to load '{name}': {e}", style="bold red")
 
+    atexit.register(shutdown_mcp)
     return all_tools
 
 
-async def _shutdown_all():
-    """Cleanly shutdown all persistent MCP connections."""
-    for client in _clients:
-        await client._cleanup()
-    _clients.clear()
-
-
 def shutdown_mcp():
-    """Synchronous entrypoint to shut down all MCP connections."""
+    """Cleanly shut down all MCP connections."""
+    loop = _get_loop()
+    async def _close_all():
+        for c in _clients:
+            await c._cleanup()
+        _clients.clear()
     try:
-        _run_async(_shutdown_all())
+        asyncio.run_coroutine_threadsafe(_close_all(), loop).result(timeout=5.0)
     except Exception:
         pass
-
-
-def get_mcp_tools() -> List[StructuredTool]:
-    """Synchronous entrypoint called by main.py."""
-    tools = _run_async(_load_all_servers())
-    atexit.register(shutdown_mcp)
-    return tools
