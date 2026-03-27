@@ -29,9 +29,11 @@ TOOL_PHASE_MAP = {
     "hydra_bruteforce": Phase.EXPLOIT, "whatweb_scan": Phase.RECON,
     "ffuf_fuzz": Phase.ENUM, "curl_request": Phase.RECON,
     "search_exploitdb": Phase.VULN, "search_web": Phase.RECON,
-    "execute_shell_command": Phase.EXPLOIT,
+    # execute_shell_command is generic — phase is inferred from current_phase
     "execute_sandboxed_script": Phase.EXPLOIT,
     "hash_identify": Phase.POST_EXPLOIT,
+    # Shell sessions
+    "create_shell_session": Phase.EXPLOIT,
 }
 
 
@@ -137,22 +139,10 @@ class TaskTree:
         
         return "\n".join(lines)
     
-    def get_context_for_agent(self) -> str:
-        """Generate a context string to inject into agent prompt."""
-        lines = [f"[PENTEST PROGRESS] Target: {self.target}"]
-        lines.append(f"Current Phase: {self.current_phase.value.replace('_', ' ').title()}")
-        
-        if not self.nodes:
-            lines.append("Actions so far: 0 (No actions taken yet)")
-            return "\n".join(lines)
-            
-        lines.append(f"Actions so far: {len(self.nodes)}")
-        
-        # Last 5 actions
-        for node in self.nodes[-5:]:
-            lines.append(f"- [{node.phase.value}] {node.action}: {node.result_summary[:100]}")
-        
-        return "\n".join(lines)
+    def get_status_line(self) -> str:
+        """One-line status for UI display (not injected into agent prompt)."""
+        phase = self.current_phase.value.replace('_', ' ').title()
+        return f"Target: {self.target or 'not set'} | Phase: {phase} | Actions: {len(self.nodes)}"
     
     def to_dict(self) -> dict:
         return {

