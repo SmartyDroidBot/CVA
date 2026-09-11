@@ -487,10 +487,11 @@ class CommandHandler:
 
     def _set_target(self, args: str) -> str:
         if not args:
-            target = self.task_tree.target if self.task_tree else "not set"
-            orch_target = getattr(self.orchestrator, "target", "") or "not set"
+            tt = self.task_tree.target if self.task_tree else ""
+            ot = getattr(self.orchestrator, "target", "") if self.orchestrator else ""
+            current = tt or ot or "not set"
             return (
-                f"Current target: {orch_target}\n"
+                f"Current target: {current}\n"
                 f"Usage: /target <ip/url>"
             )
 

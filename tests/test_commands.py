@@ -40,7 +40,8 @@ class TestEnhancedCommands:
     def test_target_set(self, handler):
         output, _ = handler.execute("/target 192.168.1.50")
         assert "192.168.1.50" in output
-        assert handler.task_tree.target == "192.168.1.50"
+        # Bare host/IP is normalised with an http:// scheme.
+        assert handler.task_tree.target == "http://192.168.1.50"
     
     def test_target_show(self, handler):
         output, _ = handler.execute("/target")
