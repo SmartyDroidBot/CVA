@@ -95,6 +95,73 @@ class TestTaskTree:
         assert len(d["nodes"]) == 1
 
 
+class TestTaskGraph:
+    """Tests for the Penetration Task Graph (DAG)."""
+
+    def test_add_and_get_task(self):
+        tree = TaskTree(target="t")
+        t = tree.add_task("Port scan", phase=Phase.RECON)
+        assert t.id == "t1"
+        assert tree.get_task("t1").description == "Port scan"
+        assert t.status == "pending"
+
+    def test_ready_tasks_respects_deps(self):
+        tree = TaskTree()
+        a = tree.add_task("recon", phase=Phase.RECON)          # t1
+        b = tree.add_task("enum", deps=[a.id])                  # t2 needs t1
+        # Only the dependency-free task is ready initially.
+        ready_ids = {t.id for t in tree.ready_tasks()}
+        assert ready_ids == {a.id}
+        # Completing t1 unlocks t2.
+        tree.mark(a.id, "done")
+        ready_ids = {t.id for t in tree.ready_tasks()}
+        assert ready_ids == {b.id}
+
+    def test_mark_running_sets_phase(self):
+        tree = TaskTree()
+        t = tree.add_task("exploit", phase=Phase.EXPLOIT)
+        tree.mark(t.id, "running")
+        assert tree.current_phase == Phase.EXPLOIT
+        assert tree.get_task(t.id).status == "running"
+
+    def test_mark_invalid_status_raises(self):
+        tree = TaskTree()
+        t = tree.add_task("x")
+        with pytest.raises(ValueError):
+            tree.mark(t.id, "bogus")
+
+    def test_tasks_complete(self):
+        tree = TaskTree()
+        assert tree.tasks_complete() is False   # no tasks
+        a = tree.add_task("a")
+        b = tree.add_task("b")
+        assert tree.tasks_complete() is False
+        tree.mark(a.id, "done")
+        tree.mark(b.id, "skipped")
+        assert tree.tasks_complete() is True
+
+    def test_blocked_task_never_ready_after_failed_dep(self):
+        tree = TaskTree()
+        a = tree.add_task("a")
+        b = tree.add_task("b", deps=[a.id])
+        tree.mark(a.id, "failed")
+        assert b.id not in {t.id for t in tree.ready_tasks()}
+
+    def test_to_dict_includes_tasks(self):
+        tree = TaskTree(target="t")
+        tree.add_task("scan", phase=Phase.RECON)
+        d = tree.to_dict()
+        assert len(d["tasks"]) == 1
+        assert d["tasks"][0]["id"] == "t1"
+
+    def test_context_includes_task_graph(self):
+        tree = TaskTree(target="t")
+        tree.add_task("Port scan the host")
+        ctx = tree.get_context_for_agent()
+        assert "Task graph" in ctx
+        assert "Port scan the host" in ctx
+
+
 class TestTaskNode:
     """Tests for individual task nodes."""
     

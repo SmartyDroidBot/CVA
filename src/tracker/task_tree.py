@@ -83,14 +83,44 @@ class TaskNode:
         }
 
 
+TASK_STATUSES = ("pending", "running", "done", "skipped", "failed")
+
+
+class Task:
+    """A node in the Penetration Task Graph (DAG).
+
+    Unlike ``TaskNode`` (a record of a completed action), a ``Task`` is planned
+    work with dependencies and a lifecycle, driven by the planner/executor.
+    """
+
+    def __init__(self, task_id: str, description: str, phase: Phase = Phase.RECON,
+                 deps: Optional[List[str]] = None, status: str = "pending"):
+        self.id = task_id
+        self.description = description
+        self.phase = phase
+        self.deps: List[str] = list(deps or [])
+        self.status = status  # one of TASK_STATUSES
+        self.result = ""
+        self.created = datetime.now(timezone.utc)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id, "description": self.description,
+            "phase": self.phase.value, "deps": self.deps,
+            "status": self.status, "result": self.result,
+        }
+
+
 class TaskTree:
-    """Tracks the pentesting progress as a tree of actions."""
-    
+    """Tracks pentest progress: a log of completed actions plus a task-graph DAG."""
+
     def __init__(self, target: str = ""):
         self.target = target
-        self.nodes: List[TaskNode] = []
+        self.nodes: List[TaskNode] = []                 # completed-action log
         self.current_phase: Phase = Phase.RECON
         self.phase_completions: Dict[Phase, bool] = {p: False for p in Phase}
+        self.tasks: Dict[str, Task] = {}                # the DAG (id -> Task)
+        self._task_counter = 0
     
     def add_action(self, action: str, tool: str = "", result_summary: str = "",
                    command: str = ""):
@@ -180,7 +210,7 @@ class TaskTree:
         Returns an empty string when nothing has happened yet, so callers can
         cheaply skip injecting empty context.
         """
-        if not self.nodes:
+        if not self.nodes and not self.tasks:
             return ""
 
         phase = self.current_phase.value.replace("_", " ").title()
@@ -189,17 +219,75 @@ class TaskTree:
             f"Target: {self.target or 'not set'}",
             f"Current phase: {phase}",
             f"Actions so far: {len(self.nodes)}",
-            "Recent actions:",
         ]
-        for node in self.nodes[-5:]:
-            tool_str = f" [{node.tool}]" if node.tool else ""
-            summary = f" → {node.result_summary[:80]}" if node.result_summary else ""
-            lines.append(f"  - {node.action[:60]}{tool_str}{summary}")
+        if self.nodes:
+            lines.append("Recent actions:")
+            for node in self.nodes[-5:]:
+                tool_str = f" [{node.tool}]" if node.tool else ""
+                summary = f" → {node.result_summary[:80]}" if node.result_summary else ""
+                lines.append(f"  - {node.action[:60]}{tool_str}{summary}")
+        if self.tasks:
+            lines.append("Task graph:")
+            for t in self.tasks.values():
+                dep_str = f" (needs {', '.join(t.deps)})" if t.deps else ""
+                lines.append(f"  [{t.status}] {t.id}: {t.description[:60]}{dep_str}")
         return "\n".join(lines)
+
+    # ── Task graph (DAG) ────────────────────────────────────────────────────
+
+    def add_task(self, description: str, phase: Phase = Phase.RECON,
+                 deps: Optional[List[str]] = None, task_id: Optional[str] = None) -> Task:
+        """Add a planned task to the graph. Auto-assigns an id when not given."""
+        if task_id is None:
+            self._task_counter += 1
+            task_id = f"t{self._task_counter}"
+        task = Task(task_id=task_id, description=description, phase=phase, deps=deps)
+        self.tasks[task_id] = task
+        return task
+
+    def get_task(self, task_id: str) -> Optional[Task]:
+        return self.tasks.get(task_id)
+
+    def ready_tasks(self) -> List[Task]:
+        """Pending tasks whose dependencies are all satisfied (done)."""
+        ready = []
+        for t in self.tasks.values():
+            if t.status != "pending":
+                continue
+            if all(
+                (self.tasks.get(d) is not None and self.tasks[d].status == "done")
+                for d in t.deps
+            ):
+                ready.append(t)
+        return ready
+
+    def mark(self, task_id: str, status: str, result: str = "") -> Optional[Task]:
+        """Update a task's status (and optionally its result)."""
+        if status not in TASK_STATUSES:
+            raise ValueError(f"invalid task status: {status}")
+        t = self.tasks.get(task_id)
+        if not t:
+            return None
+        t.status = status
+        if result:
+            t.result = result
+        if status == "running":
+            self.current_phase = t.phase   # graph-driven phase progression
+        return t
+
+    def all_tasks(self) -> List[Task]:
+        return list(self.tasks.values())
+
+    def tasks_complete(self) -> bool:
+        """True when there are tasks and none remain pending/running."""
+        return bool(self.tasks) and all(
+            t.status in ("done", "skipped", "failed") for t in self.tasks.values()
+        )
 
     def to_dict(self) -> dict:
         return {
             "target": self.target,
             "current_phase": self.current_phase.value,
             "nodes": [n.to_dict() for n in self.nodes],
+            "tasks": [t.to_dict() for t in self.tasks.values()],
         }
