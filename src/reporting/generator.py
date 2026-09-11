@@ -58,7 +58,10 @@ class ReportGenerator:
         self.raw_evidence: List[Dict] = []
     
     def add_finding(self, finding: Finding):
-        """Add a finding to the report."""
+        """Add a finding to the report (deduped by title + severity)."""
+        for existing in self.findings:
+            if existing.title == finding.title and existing.severity == finding.severity:
+                return
         self.findings.append(finding)
     
     def add_evidence(self, tool: str, command: str, output: str):

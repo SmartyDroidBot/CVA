@@ -202,10 +202,9 @@ class AutoRunner:
                  orchestrator=None, report_gen=None, session_logger=None):
         self.target = target.rstrip("/")
         self.host = self._extract_host(target)
-        self.tools = tools
+        self.tools = list(tools)
         self.start_time = time.time()
         self.tool_call_count = 0
-        self.findings: List[Finding] = []
         self._stop = False
         self.current_phase = "reconnaissance"
 
@@ -214,6 +213,17 @@ class AutoRunner:
         self.report_gen.target = self.target
         self.report_gen.tester = "CVA v3 Auto Mode"
         self.session_logger = session_logger or SessionLogger()
+
+        # Structured findings via the record_finding tool (replaces keyword
+        # extraction). findings stay in sync with the recorder for the summary.
+        from src.memory.evidence import FindingRecorder
+        from src.tools.finding_tool import setup_finding_tool, record_finding
+        self.recorder = FindingRecorder(report_gen=self.report_gen,
+                                        on_record=self._print_finding)
+        self.findings: List[Finding] = self.recorder.findings
+        setup_finding_tool(self.recorder)
+        if not any(getattr(t, "name", "") == "record_finding" for t in self.tools):
+            self.tools.append(record_finding)
 
         # Configure settings for auto mode
         settings.require_approval = False
@@ -271,14 +281,12 @@ class AutoRunner:
             if not self._looks_like_hallucinated_calls(text):
                 self._print_ai_response(text)
             self._detect_phase(text)
-            self._extract_findings(text)
         elif kind == "tool_call":
             self._print_tool_call(data.get("name", ""), data.get("args", {}))
         elif kind == "tool_result":
             name, output = data.get("name", ""), data.get("output", "")
             self._print_tool_output(name, output)
             self._print_status_bar()
-            self._extract_findings(output)
             self.report_gen.add_evidence(name, name, output[:2000])
         elif kind in ("task_error", "plan_error"):
             console.print(f"  [red]{kind}: {data.get('error', '')}[/red]")
@@ -425,70 +433,6 @@ class AutoRunner:
                 if name != self.current_phase:
                     self._print_phase(name, num)
                 break
-
-    # ── Finding extraction from agent output ──────────────────────────────
-
-    def _extract_findings(self, text: str):
-        """Parse findings from the agent's analysis text."""
-        lower = text.lower()
-
-        finding_patterns = [
-            # (keyword match, severity, title template)
-            (["sql injection", "sqli", "authentication bypass"], "critical",
-             "SQL Injection"),
-            (["xss", "cross-site scripting", "script injection"], "high",
-             "Cross-Site Scripting (XSS)"),
-            (["sensitive file", "file exposure", "/ftp/", "directory listing"], "high",
-             "Sensitive File Exposure"),
-            (["broken access control", "idor", "unauthorized access", "unauthenticated"], "high",
-             "Broken Access Control"),
-            (["default credential", "admin123", "weak password"], "medium",
-             "Default/Weak Credentials"),
-            (["information disclosure", "stack trace", "verbose error", "debug info"], "low",
-             "Information Disclosure"),
-            (["jwt", "token", "forged token"], "high",
-             "JWT/Token Vulnerability"),
-            (["ssrf", "server-side request"], "high",
-             "Server-Side Request Forgery"),
-            (["directory traversal", "path traversal", "lfi", "local file inclusion"], "high",
-             "Path Traversal / LFI"),
-            (["rce", "remote code execution", "command injection"], "critical",
-             "Remote Code Execution"),
-        ]
-
-        for keywords, severity, title in finding_patterns:
-            # Only add if confirmed (vulnerable, success, confirmed, exploited)
-            confirms = ["vulnerable", "success", "confirmed", "exploited",
-                         "obtained", "bypass"]
-            has_keyword = any(kw in lower for kw in keywords)
-            has_confirm = any(cf in lower for cf in confirms)
-
-            if has_keyword and has_confirm:
-                # Don't add duplicate findings
-                existing = {f.title for f in self.findings}
-                if title not in existing:
-                    # Try to extract evidence from nearby text
-                    evidence = ""
-                    for kw in keywords:
-                        idx = lower.find(kw)
-                        if idx >= 0:
-                            start = max(0, idx - 100)
-                            end = min(len(text), idx + 300)
-                            evidence = text[start:end].strip()
-                            break
-
-                    finding = Finding(
-                        title=title,
-                        severity=severity,
-                        description=f"Detected during autonomous VAPT of {self.target}",
-                        evidence=evidence[:500],
-                        remediation="See detailed report.",
-                        tool="CVA-Auto",
-                        category=title.split("(")[0].strip() if "(" in title else title,
-                    )
-                    self.findings.append(finding)
-                    self.report_gen.add_finding(finding)
-                    self._print_finding(finding)
 
     def _looks_like_hallucinated_calls(self, text: str) -> bool:
         """Detect if the LLM wrote tool call JSON as text instead of calling tools."""

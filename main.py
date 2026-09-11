@@ -60,6 +60,7 @@ def _load_tools() -> List[StructuredTool]:
 READ_ONLY_TOOLS = {
     "search_knowledge_base", "read_local_file",
     "search_exploits", "examine_exploit",
+    "record_finding",  # writes to the report, not the target — no prompt needed
 }
 
 
@@ -147,6 +148,7 @@ def main():
 
     # 1. Knowledge system (built first so the KB tool can be wired into the agent)
     rag, kb = _init_rag()
+    report_gen = ReportGenerator()
 
     # 2. Load tools
     cli.print_status("Loading tools...")
@@ -164,6 +166,18 @@ def main():
     except Exception as e:
         cli.print_error(f"KB tool registration failed: {e}")
 
+    # 2c. Register the record_finding tool (structured evidence store).
+    recorder = None
+    try:
+        from src.memory.evidence import FindingRecorder
+        from src.tools.finding_tool import setup_finding_tool, record_finding
+        recorder = FindingRecorder(report_gen=report_gen)
+        setup_finding_tool(recorder)
+        tools.append(record_finding)
+        cli.print_status("Finding recorder registered (record_finding).")
+    except Exception as e:
+        cli.print_error(f"Finding tool registration failed: {e}")
+
     # 3. Apply approval gate
     if settings.require_approval:
         tools = _apply_approval_gate(tools)
@@ -175,10 +189,11 @@ def main():
 
     # 5. Session store
     session_store = _init_session_store()
+    if recorder is not None:
+        recorder.session_store = session_store   # persist findings when available
 
     # 6. Other subsystems
     task_tree = TaskTree()
-    report_gen = ReportGenerator()
     session_logger = SessionLogger()
     summarizer = Summarizer(llm=orchestrator.llm)
 
@@ -191,6 +206,7 @@ def main():
         report_gen=report_gen,
         session_logger=session_logger,
         kb=kb,
+        recorder=recorder,
     )
 
     # 8. Auto-create session if configured
@@ -198,6 +214,8 @@ def main():
         if session_store:
             sid = session_store.create_session("auto")
             cmd_handler.current_session_id = sid
+            if recorder is not None:
+                recorder.session_id = sid
             session_logger.switch_session(sid)
             cli.print_status(f"Auto-session created: {sid}")
         else:

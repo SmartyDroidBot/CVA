@@ -49,8 +49,9 @@ class CommandHandler:
 
     def __init__(self, orchestrator=None, tools=None,
                  session_store=None, task_tree=None, report_gen=None,
-                 session_logger: SessionLogger = None, kb=None):
+                 session_logger: SessionLogger = None, kb=None, recorder=None):
         self.orchestrator = orchestrator
+        self.recorder = recorder
         self.tools = tools or []
         self.session_store = session_store
         self.task_tree = task_tree
@@ -382,6 +383,8 @@ class CommandHandler:
             name = subarg or None
             sid = self.session_store.create_session(name)
             self.current_session_id = sid
+            if self.recorder:
+                self.recorder.session_id = sid
             self.session_logger.switch_session(sid)
             self.session_logger.log_event("session", f"New session created: {sid} ({name or 'unnamed'})")
             return f"✓ Created session: {sid} ({name or 'unnamed'})\n  Log: {self.session_logger.log_path}"
@@ -393,6 +396,8 @@ class CommandHandler:
             if not session:
                 return f"Session '{subarg}' not found."
             self.current_session_id = subarg
+            if self.recorder:
+                self.recorder.session_id = subarg
             target = session.get("target", "")
             if target and self.task_tree:
                 self.task_tree.target = target
