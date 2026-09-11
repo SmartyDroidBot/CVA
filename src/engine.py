@@ -24,6 +24,7 @@ from typing import Callable, Dict, List, Optional
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src.brain.thinking import strip_thinking
+from src.guardrails.injection import screen_tool_output
 from src.tracker.task_tree import Phase, TaskTree, infer_phase_from_command
 
 MAX_TASK_ROUNDS = 6      # LLM↔tool iterations per task
@@ -210,7 +211,10 @@ class PentestEngine:
                 command = args.get("command", "") if isinstance(args, dict) else ""
                 self.graph.add_action(f"Task {task.id}: {name}", tool=name,
                                       result_summary=output[:100], command=command)
-                convo.append(ToolMessage(content=output[:TOOL_OUTPUT_CAP],
+                # Fence attacker-influenced output as untrusted data before it
+                # re-enters the model (indirect prompt-injection defense).
+                screened = screen_tool_output(output[:TOOL_OUTPUT_CAP])
+                convo.append(ToolMessage(content=screened,
                                          tool_call_id=tc.get("id", name), name=name))
 
         return "\n".join(produced)

@@ -5,14 +5,22 @@ netcat, Metasploit, nmap, and reverse shells that persist across tool calls.
 """
 
 import os
-import pty
-import signal
-import select
 import subprocess
 import threading
 import time
 import uuid
 from typing import Dict, List, Optional
+
+# PTY-based sessions are POSIX-only. Import defensively so the module loads on
+# non-POSIX hosts (e.g. Windows); get_session_tools() returns nothing there.
+try:
+    import pty
+    import signal
+    import select
+    _POSIX = True
+except ImportError:  # pragma: no cover - platform dependent
+    pty = signal = select = None
+    _POSIX = False
 
 from langchain_core.tools import StructuredTool
 from pydantic import create_model
@@ -291,7 +299,12 @@ def shutdown_all():
 # ── LangChain tool wrappers ─────────────────────────────────────────────────
 
 def get_session_tools() -> list:
-    """Return LangChain StructuredTools for shell session management."""
+    """Return LangChain StructuredTools for shell session management.
+
+    Empty on non-POSIX hosts, where PTY sessions are unavailable.
+    """
+    if not _POSIX:
+        return []
     return [
         StructuredTool.from_function(
             func=create_session,

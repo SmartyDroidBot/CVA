@@ -166,8 +166,10 @@ class Orchestrator:
                                     tool_output = f"Tool error: {e}"
                             else:
                                 tool_output = f"Unknown tool: {tc['name']}"
+                            # Fence attacker-influenced output as untrusted data.
+                            from src.guardrails.injection import screen_tool_output
                             tm = ToolMessage(
-                                content=str(tool_output),
+                                content=screen_tool_output(str(tool_output)),
                                 tool_call_id=tc["id"],
                                 name=tc["name"],
                             )
