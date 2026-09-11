@@ -56,8 +56,15 @@ def _load_tools() -> List[StructuredTool]:
 
 # ── Approval Gate ────────────────────────────────────────────────────────────
 
+# Read-only tools that never modify the target — no approval prompt needed.
+READ_ONLY_TOOLS = {
+    "search_knowledge_base", "read_local_file",
+    "search_exploits", "examine_exploit",
+}
+
+
 def _apply_approval_gate(tools: List[StructuredTool]) -> List[StructuredTool]:
-    """Wrap tools with human-in-the-loop approval."""
+    """Wrap tools with human-in-the-loop approval (read-only tools pass through)."""
     from src.guardrails.command import check_command
 
     gated = []
@@ -65,7 +72,7 @@ def _apply_approval_gate(tools: List[StructuredTool]) -> List[StructuredTool]:
         original_func = tool.func
 
         def _gated_func(_fn=original_func, _name=tool.name, **kwargs):
-            if not settings.require_approval:
+            if not settings.require_approval or _name in READ_ONLY_TOOLS:
                 return _fn(**kwargs)
 
             # Command guardrail check (output-side)
@@ -140,24 +147,33 @@ def _init_rag():
 def main():
     cli.print_banner()
 
-    # 1. Load tools
+    # 1. Knowledge system (built first so the KB tool can be wired into the agent)
+    rag, vector_kb = _init_rag()
+
+    # 2. Load tools
     cli.print_status("Loading tools...")
     tools = _load_tools()
     if not tools:
         cli.print_error("No tools loaded. Check config/mcp_servers.yaml")
         sys.exit(1)
 
-    # 2. Apply approval gate
+    # 2b. Register the knowledge-base search tool so the agent can query the KB.
+    try:
+        from src.tools.kb_tool import setup_kb_tool, search_knowledge_base
+        setup_kb_tool(rag)
+        tools.append(search_knowledge_base)
+        cli.print_status("Knowledge-base tool registered (search_knowledge_base).")
+    except Exception as e:
+        cli.print_error(f"KB tool registration failed: {e}")
+
+    # 3. Apply approval gate
     if settings.require_approval:
         tools = _apply_approval_gate(tools)
         cli.print_status("Approval gate active (use /approval off to disable).")
 
-    # 3. Initialize orchestrator
+    # 4. Initialize orchestrator
     cli.print_status(f"Initializing agent (mode: {settings.agent_mode})...")
     orchestrator = Orchestrator(tools=tools, mode=settings.agent_mode)
-
-    # 4. Knowledge system
-    rag, vector_kb = _init_rag()
 
     # 5. Session store
     session_store = _init_session_store()
@@ -298,11 +314,18 @@ def main():
                 result = orchestrator.invoke(enhanced_input, THREAD_ID)
                 messages = result.get("messages", [])
 
+                tool_cmds = {}  # tool_call_id -> command string (for phase inference)
                 for msg in messages:
-                    if isinstance(msg, AIMessage) and msg.content:
-                        content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                        cli.print_agent_response(content)
-                        session_logger.log_agent_response(content)
+                    if isinstance(msg, AIMessage):
+                        for tc in (getattr(msg, "tool_calls", None) or []):
+                            args = tc.get("args", {}) or {}
+                            tool_cmds[tc.get("id")] = (
+                                args.get("command", "") if isinstance(args, dict) else ""
+                            )
+                        if msg.content:
+                            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+                            cli.print_agent_response(content)
+                            session_logger.log_agent_response(content)
 
                     elif isinstance(msg, ToolMessage):
                         cli.print_tool_result(msg.name, msg.content)
@@ -313,6 +336,7 @@ def main():
                                 action=f"Tool: {msg.name}",
                                 tool=msg.name,
                                 result_summary=msg.content[:100],
+                                command=tool_cmds.get(getattr(msg, "tool_call_id", None), ""),
                             )
 
         except KeyboardInterrupt:

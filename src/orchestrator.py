@@ -26,6 +26,9 @@ from src.config import settings
 
 THREAD_ID = "cva-session-1"
 
+# Max LLM↔tool iterations a specialist may run within one user turn.
+MAX_TOOL_ROUNDS = 8
+
 # ── Supervisor System Prompt ──────────────────────────────────────────────────
 
 _SUPERVISOR_TEMPLATE = """\
@@ -125,9 +128,13 @@ class Orchestrator:
 
             def make_specialist(llm_with_tools, prompt, tools_list, orchestrator_ref):
                 def specialist(state: AgentState) -> dict:
-                    """Run one ReAct round for this specialist."""
+                    """Run a bounded ReAct loop for this specialist.
+
+                    Iterates LLM → tool calls → results until the model stops
+                    calling tools (or MAX_TOOL_ROUNDS is hit), so multi-step tool
+                    sequences complete within a single user turn.
+                    """
                     msgs = list(state["messages"])
-                    # Build system prompt — include target if set
                     full_prompt = prompt
                     if orchestrator_ref.target:
                         full_prompt = (
@@ -136,13 +143,21 @@ class Orchestrator:
                             + prompt
                         )
                     system = SystemMessage(content=full_prompt)
-                    result = llm_with_tools.invoke([system] + msgs)
-                    new_msgs = [result]
+                    tool_map = {t.name: t for t in tools_list}
 
-                    # If the LLM called tools, execute them
-                    if hasattr(result, "tool_calls") and result.tool_calls:
-                        tool_map = {t.name: t for t in tools_list}
-                        for tc in result.tool_calls:
+                    convo = [system] + msgs   # working context for this turn
+                    produced: list[BaseMessage] = []  # messages to merge into state
+
+                    for _ in range(MAX_TOOL_ROUNDS):
+                        result = llm_with_tools.invoke(convo)
+                        convo.append(result)
+                        produced.append(result)
+
+                        tool_calls = getattr(result, "tool_calls", None)
+                        if not tool_calls:
+                            break
+
+                        for tc in tool_calls:
                             tool = tool_map.get(tc["name"])
                             if tool:
                                 try:
@@ -151,17 +166,15 @@ class Orchestrator:
                                     tool_output = f"Tool error: {e}"
                             else:
                                 tool_output = f"Unknown tool: {tc['name']}"
-                            new_msgs.append(ToolMessage(
+                            tm = ToolMessage(
                                 content=str(tool_output),
                                 tool_call_id=tc["id"],
                                 name=tc["name"],
-                            ))
+                            )
+                            convo.append(tm)
+                            produced.append(tm)
 
-                        # Let the specialist synthesize results
-                        synthesis = llm_with_tools.invoke([system] + msgs + new_msgs)
-                        new_msgs.append(synthesis)
-
-                    return {"messages": new_msgs}
+                    return {"messages": produced}
                 return specialist
 
             node_name = agent_def.name

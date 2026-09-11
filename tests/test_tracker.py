@@ -1,7 +1,9 @@
 """Tests for Task Tree / Progress Tracker module."""
 
 import pytest
-from src.tracker.task_tree import TaskTree, Phase, TaskNode, TOOL_PHASE_MAP
+from src.tracker.task_tree import (
+    TaskTree, Phase, TaskNode, TOOL_PHASE_MAP, infer_phase_from_command,
+)
 
 
 class TestTaskTree:
@@ -15,27 +17,38 @@ class TestTaskTree:
     
     def test_add_action(self):
         tree = TaskTree(target="10.0.0.1")
-        tree.add_action(action="Port scan", tool="nmap_scan", result_summary="22,80,443 open")
+        tree.add_action(action="Port scan", tool="execute_shell_command",
+                        result_summary="22,80,443 open", command="nmap -sV 10.0.0.1")
         assert len(tree.nodes) == 1
         assert tree.nodes[0].phase == Phase.RECON
-    
+
     def test_auto_phase_detection(self):
+        """Generic shell commands drive phase via command inference."""
         tree = TaskTree()
-        tree.add_action(action="Scan", tool="nmap_scan")
+        tree.add_action(action="Scan", tool="execute_shell_command", command="nmap -sV t")
         assert tree.current_phase == Phase.RECON
-        
-        tree.add_action(action="Dir bust", tool="gobuster_dir")
+
+        tree.add_action(action="Dir bust", tool="execute_shell_command",
+                        command="gobuster dir -u http://t")
         assert tree.current_phase == Phase.ENUM
-        
-        tree.add_action(action="SQLi test", tool="sqlmap_scan")
-        assert tree.current_phase == Phase.EXPLOIT
-    
+
+        tree.add_action(action="SQLi test", tool="execute_shell_command",
+                        command="sqlmap -u http://t --batch")
+        assert tree.current_phase == Phase.VULN
+
+    def test_command_phase_inference(self):
+        assert infer_phase_from_command("nmap -sV host") == Phase.RECON
+        assert infer_phase_from_command("gobuster dir -u http://x") == Phase.ENUM
+        assert infer_phase_from_command("nikto -h http://x") == Phase.VULN
+        assert infer_phase_from_command("hydra -l admin -P w ssh://x") == Phase.EXPLOIT
+        assert infer_phase_from_command("linpeas.sh") == Phase.POST_EXPLOIT
+        assert infer_phase_from_command("echo hi") is None
+
     def test_tool_phase_mapping(self):
-        assert TOOL_PHASE_MAP["nmap_scan"] == Phase.RECON
-        assert TOOL_PHASE_MAP["gobuster_dir"] == Phase.ENUM
-        assert TOOL_PHASE_MAP["nikto_scan"] == Phase.VULN
-        assert TOOL_PHASE_MAP["sqlmap_scan"] == Phase.EXPLOIT
-        assert TOOL_PHASE_MAP["hydra_bruteforce"] == Phase.EXPLOIT
+        assert TOOL_PHASE_MAP["search_exploits"] == Phase.VULN
+        assert TOOL_PHASE_MAP["examine_exploit"] == Phase.VULN
+        assert TOOL_PHASE_MAP["execute_sandboxed_script"] == Phase.EXPLOIT
+        assert TOOL_PHASE_MAP["create_shell_session"] == Phase.EXPLOIT
     
     def test_get_progress(self):
         tree = TaskTree(target="10.0.0.1")

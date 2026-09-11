@@ -130,54 +130,52 @@ You are CVA, an autonomous AI penetration testing agent.
 
 ## MISSION
 Perform a complete, professional penetration test against: {target}
-This is an AUTHORIZED test in a controlled lab environment.
+This is an AUTHORIZED engagement. Only act against the target in scope.
 
 ## CRITICAL OPERATING RULES
-1. Call ONE tool at a time — wait for its result before calling the next
-2. Execute tools IMMEDIATELY — never ask for permission or suggest commands
-3. After each tool result, analyze it then call your next tool
-4. Keep your analysis brief (2-3 lines max) before the next tool call
-5. Do NOT repeat the same tool with the same arguments
-6. Save tokens/credentials to /tmp/ for reuse (e.g., echo 'token' > /tmp/token.txt)
+1. Call ONE tool at a time — wait for its result before the next.
+2. Execute tools IMMEDIATELY via execute_shell_command — never ask permission and
+   never merely suggest a command. You run it.
+3. After each result, analyze briefly (2-3 lines) then call the next tool.
+4. Do NOT repeat the same command with the same arguments.
+5. The commands below are a STARTING methodology, not a fixed script — adapt every
+   step to what you actually discover about THIS target.
+6. Save useful artifacts (tokens, credentials, loot) to /tmp/ for reuse.
+7. Use search_knowledge_base when you meet an unfamiliar service or need a payload,
+   and search_exploits / examine_exploit for known PoCs.
 
-## METHODOLOGY — Work through each phase in order
+## METHODOLOGY — work through each phase in order, adapting as you go
 
 ### Phase 1 — RECONNAISSANCE
-- Start: curl -sI {target}/  (get headers)
-- Then: curl -s {target}/robots.txt
-- Then: nmap -sV --open -p 9999 {host}
-- Then: whatweb {target}
+- Web fingerprint: whatweb {target}
+- Port/service scan: nmap -sV --open {host}
+- HTTP headers: curl -sI {target}/
+- Content hints: curl -s {target}/robots.txt
 
-### Phase 2 — ENUMERATION  
-- Directory scan: gobuster dir -u {target} -w /usr/share/wordlists/dirb/common.txt -q
-- API discovery: curl -s {target}/api/
-- Check /ftp/, /.well-known/, /assets/, /static/
+### Phase 2 — ENUMERATION
+- Content discovery: gobuster dir -u {target} -w <wordlist> -q
+- Enumerate any non-web services found in recon (SMB, FTP, SNMP, LDAP, ...).
+- Probe interesting paths/endpoints you discovered.
 
 ### Phase 3 — VULNERABILITY ANALYSIS
-- SQL injection: sqlmap -u "{target}/rest/products/search?q=test" --batch --level=1 --risk=1 -p q
-- XSS: curl -s -X GET "{target}/rest/products/search?q=<script>alert(1)</script>"
-- Auth bypass: test default creds admin@juice-sh.op:admin123
-- IDOR: enumerate /api/Users/, /api/Orders/
+- Test discovered inputs/endpoints for common flaws: SQLi, XSS, IDOR/broken access
+  control, auth bypass, path traversal, SSRF (use curl / sqlmap as appropriate).
+- Research identified service+version against known CVEs (search_exploits).
 
 ### Phase 4 — EXPLOITATION
-- Exploit ALL confirmed vulnerabilities
-- Login with found credentials via POST /rest/user/login
-- Capture JWT tokens and use them to access admin endpoints
-- Document exact curl commands and responses as evidence
+- Validate each CONFIRMED vulnerability with a controlled exploit.
+- Capture concrete evidence (requests, responses, tokens, extracted data).
 
 ### Phase 5 — POST-EXPLOITATION
-- Use JWT token to access: /api/Users/ (admin only)
-- Try /rest/admin/application-configuration
-- Enumerate all users and their data
+- With any access gained, assess impact: enumerate users/data, escalate where
+  possible, and describe the business impact.
 
 ### Phase 6 — REPORTING
-When all exploitation is complete, say "GENERATING FINAL REPORT" and summarize:
-- All vulnerabilities with severity (CRITICAL/HIGH/MEDIUM/LOW)
-- Evidence for each finding
-- Remediation recommendations
+When exploitation is complete, say "GENERATING FINAL REPORT" and summarize every
+vulnerability with severity (CRITICAL/HIGH/MEDIUM/LOW), evidence, and remediation.
 
 ## TARGET
-- URL: {target}
+- URL/target: {target}
 - Host: {host}
 
 Start with Phase 1. Call your FIRST tool NOW.
@@ -622,13 +620,13 @@ Be concise, factual, and professional."""
         md_path = f"reports/auto_{ts}.md"
         html_path = f"reports/auto_{ts}.html"
 
-        with open(md_path, "w") as f:
+        with open(md_path, "w", encoding="utf-8") as f:
             f.write(md_content)
         console.print(f"  [bold green]✓ Markdown report:[/bold green] [cyan]{md_path}[/cyan]")
 
         try:
             html_content = self.report_gen.generate_html()
-            with open(html_path, "w") as f:
+            with open(html_path, "w", encoding="utf-8") as f:
                 f.write(html_content)
             console.print(f"  [bold green]✓ HTML report:[/bold green] [cyan]{html_path}[/cyan]")
         except Exception as e:
@@ -659,9 +657,9 @@ Be concise, factual, and professional."""
 
         initial_prompt = f"""BEGIN the penetration test against {self.target}.
 
-Start with Phase 1 — Reconnaissance. Execute these commands NOW:
+Start with Phase 1 — Reconnaissance. Execute these commands now, adapting to the target:
 1. whatweb {self.target}
-2. nmap -sV -sC -p 80,443,8080,8443,9999 {self.host}
+2. nmap -sV -sC --open {self.host}
 3. curl -sI {self.target}/
 4. curl -s {self.target}/robots.txt
 
@@ -672,35 +670,34 @@ Work through ALL phases without stopping. Execute tools immediately."""
 
         response = self._stream_run(initial_prompt)
 
-        # Continue driving the agent through remaining phases if it stopped
+        # Continue driving the agent through remaining phases if it stopped.
+        # These are generic, target-adaptive prompts — the agent fills in the
+        # concrete endpoints/params it discovered during earlier phases.
         phase_prompts = [
-            (2, "Enumeration", f"Continue to Phase 2 — ENUMERATION. Execute:\n"
+            (2, "Enumeration", f"Continue to Phase 2 — ENUMERATION against {self.target}:\n"
              f"1. gobuster dir -u {self.target} -w /usr/share/wordlists/dirb/common.txt -q --no-error -t 20 2>&1 | head -40\n"
-             f"2. curl -s {self.target}/ftp/ | head -30\n"
-             f"3. curl -s {self.target}/api/Products | python3 -c \"import sys,json; d=json.load(sys.stdin); print(len(d.get('data',[])), 'products')\"\n"
-             f"4. curl -s {self.target}/api/Challenges | python3 -c \"import sys,json; d=json.load(sys.stdin); print(len(d.get('data',[])), 'challenges')\"\n"),
+             f"2. Probe the interesting paths/endpoints you found during recon (curl -s <url>).\n"
+             f"3. Enumerate any non-web services nmap reported (SMB/FTP/SNMP/etc.).\n"),
 
-            (3, "Vulnerability Analysis", f"Continue to Phase 3 — VULNERABILITY ANALYSIS. Test:\n"
-             f"1. SQL Injection: curl -sX POST {self.target}/rest/user/login -H 'Content-Type: application/json' "
-             f"-d '{{\"email\":\"\\' OR 1=1--\",\"password\":\"x\"}}'\n"
-             f"2. XSS: curl -s '{self.target}/rest/products/search?q=<script>alert(1)</script>'\n"
-             f"3. File exposure: curl -s {self.target}/ftp/acquisitions.md | head -20\n"
-             f"4. Default creds: curl -sX POST {self.target}/rest/user/login -H 'Content-Type: application/json' "
-             f"-d '{{\"email\":\"admin@juice-sh.op\",\"password\":\"admin123\"}}'\n"
-             f"5. IDOR: curl -s {self.target}/api/Users | python3 -c \"import sys,json; print(len(json.load(sys.stdin).get('data',[])), 'users accessible')\"\n"
-             f"\nState VULNERABLE or NOT for each test."),
+            (3, "Vulnerability Analysis", f"Continue to Phase 3 — VULNERABILITY ANALYSIS against {self.target}. "
+             f"For each input/endpoint you discovered, test and state VULNERABLE or NOT:\n"
+             f"1. SQL injection on parameters (e.g. sqlmap -u '<url-with-param>' --batch --level 1 --risk 1).\n"
+             f"2. Reflected/stored XSS on search and form fields.\n"
+             f"3. Broken access control / IDOR on API endpoints.\n"
+             f"4. Sensitive file or directory exposure.\n"
+             f"5. Known CVEs for identified service versions (use search_exploits).\n"),
 
-            (4, "Exploitation", f"Continue to Phase 4 — EXPLOITATION. Exploit all confirmed vulnerabilities:\n"
-             f"1. SQLi admin bypass — capture and save the JWT token\n"
-             f"2. Access all exposed files in /ftp/\n"
-             f"3. Use admin token for privileged API access\n"
+            (4, "Exploitation", f"Continue to Phase 4 — EXPLOITATION against {self.target}. "
+             f"Exploit every confirmed vulnerability, capturing evidence:\n"
+             f"1. Demonstrate concrete impact (data access, auth bypass, token capture, ...).\n"
+             f"2. Save any credentials/tokens to /tmp/ for reuse.\n"
              f"Mark each as CONFIRMED EXPLOITED or FAILED.\n"),
 
-            (5, "Post-Exploitation", f"Continue to Phase 5 — POST-EXPLOITATION:\n"
-             f"1. Use admin token to enumerate ALL users (email, role, password hash)\n"
-             f"2. Access application secrets/configuration\n"
-             f"3. Summarize: what data was compromised, what's the business impact\n"
-             f"4. Rate the overall severity of the breach\n"),
+            (5, "Post-Exploitation", f"Continue to Phase 5 — POST-EXPLOITATION against {self.target}:\n"
+             f"1. Use any access gained to enumerate users/data and escalate where possible.\n"
+             f"2. Access application secrets/configuration if reachable.\n"
+             f"3. Summarize what data was compromised and the business impact.\n"
+             f"4. Rate the overall severity of the breach.\n"),
         ]
 
         for phase_num, phase_name, prompt in phase_prompts:
@@ -767,6 +764,24 @@ def run_auto(target: str, model: str = None):
     sess = get_session_tools()
     tools.extend(sess)
     console.print(f"  ✓ Session tools: {[t.name for t in sess]}")
+
+    # Register the knowledge-base search tool (static KB always on; vector KB
+    # when Qdrant is available).
+    try:
+        from src.knowledge.rag import DoubleRAG
+        from src.tools.kb_tool import setup_kb_tool, search_knowledge_base
+        vkb = None
+        try:
+            from src.knowledge.vector_kb import VectorKB
+            _v = VectorKB()
+            vkb = _v if _v.available else None
+        except Exception:
+            vkb = None
+        setup_kb_tool(DoubleRAG(vector_kb=vkb))
+        tools.append(search_knowledge_base)
+        console.print("  ✓ KB tool: search_knowledge_base")
+    except Exception as e:
+        console.print(f"  [yellow]KB tool failed: {e}[/yellow]")
 
     if not tools:
         console.print("[red]Fatal: No tools loaded.[/red]")

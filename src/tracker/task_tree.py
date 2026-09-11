@@ -22,19 +22,42 @@ PHASE_ICONS = {
 
 PHASE_ORDER = list(Phase)
 
-# Map tool names to VAPT phases
+# Map the real MCP tool names to VAPT phases. The two generic tools
+# (execute_shell_command, read_local_file) carry no inherent phase — their phase
+# is inferred from the command string (see infer_phase_from_command) or kept
+# sticky at the current phase.
 TOOL_PHASE_MAP = {
-    "nmap_scan": Phase.RECON, "gobuster_dir": Phase.ENUM,
-    "nikto_scan": Phase.VULN, "sqlmap_scan": Phase.EXPLOIT,
-    "hydra_bruteforce": Phase.EXPLOIT, "whatweb_scan": Phase.RECON,
-    "ffuf_fuzz": Phase.ENUM, "curl_request": Phase.RECON,
-    "search_exploitdb": Phase.VULN, "search_web": Phase.RECON,
-    # execute_shell_command is generic — phase is inferred from current_phase
+    "search_exploits": Phase.VULN,
+    "examine_exploit": Phase.VULN,
     "execute_sandboxed_script": Phase.EXPLOIT,
-    "hash_identify": Phase.POST_EXPLOIT,
-    # Shell sessions
+    # Shell sessions are usually opened for exploitation/interactive work.
     "create_shell_session": Phase.EXPLOIT,
 }
+
+# Keyword → phase inference for generic shell commands. Ordered most-specific
+# first so offensive tooling wins over the broad recon keywords (curl/wget).
+COMMAND_PHASE_KEYWORDS = [
+    (Phase.ENUM, ("gobuster", "ffuf", "feroxbuster", "dirb", "dirsearch",
+                  "wfuzz", "enum4linux", "smbclient", "snmpwalk", "ldapsearch")),
+    (Phase.VULN, ("nikto", "sqlmap", "nuclei", "wpscan", "searchsploit")),
+    (Phase.EXPLOIT, ("hydra", "medusa", "msfconsole", "metasploit",
+                     "hashcat", "john ")),
+    (Phase.POST_EXPLOIT, ("linpeas", "winpeas", "mimikatz", "sudo -l",
+                          "secretsdump", "crackmapexec", "evil-winrm")),
+    (Phase.RECON, ("nmap", "masscan", "whatweb", "whois", "dnsrecon",
+                   "amass", "subfinder", "dig ", "host ", "curl", "wget")),
+]
+
+
+def infer_phase_from_command(command: str) -> Optional["Phase"]:
+    """Best-effort VAPT phase for a raw shell command. Returns None if unknown."""
+    if not command:
+        return None
+    low = command.lower()
+    for phase, keywords in COMMAND_PHASE_KEYWORDS:
+        if any(kw in low for kw in keywords):
+            return phase
+    return None
 
 
 class TaskNode:
@@ -69,9 +92,16 @@ class TaskTree:
         self.current_phase: Phase = Phase.RECON
         self.phase_completions: Dict[Phase, bool] = {p: False for p in Phase}
     
-    def add_action(self, action: str, tool: str = "", result_summary: str = ""):
-        """Add a completed action to the tree."""
-        phase = TOOL_PHASE_MAP.get(tool, self.current_phase)
+    def add_action(self, action: str, tool: str = "", result_summary: str = "",
+                   command: str = ""):
+        """Add a completed action to the tree.
+
+        Phase is chosen from (in order): the command string (for generic shell
+        tools), the tool→phase map, then the current sticky phase.
+        """
+        phase = infer_phase_from_command(command)
+        if phase is None:
+            phase = TOOL_PHASE_MAP.get(tool, self.current_phase)
         node = TaskNode(
             action=action, tool=tool, phase=phase,
             status="done", result_summary=result_summary,

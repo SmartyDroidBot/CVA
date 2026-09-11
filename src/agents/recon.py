@@ -3,9 +3,7 @@
 from src.agents.registry import AgentDef, register_agent
 
 RECON_TOOLS = {
-    "nmap_scan", "whatweb_scan", "curl_request", "search_web",
-    "gobuster_dir", "ffuf_fuzz", "execute_shell_command",
-    "read_local_file", "search_knowledge_base",
+    "execute_shell_command", "read_local_file", "search_knowledge_base",
     "create_shell_session", "send_to_session", "get_session_output",
     "list_shell_sessions", "terminate_session",
 }
@@ -27,6 +25,13 @@ Systematically discover the target's attack surface through passive and active i
 - Directory & file enumeration (gobuster, ffuf, feroxbuster)
 - Service enumeration (SMB, SNMP, LDAP, NFS, DNS, SMTP)
 - OSINT gathering (theHarvester, Google dorks, Shodan)
+
+## Tooling
+You run scanners by passing the exact command to `execute_shell_command`
+(e.g. `nmap -sV --open <host>`, `whatweb <url>`, `gobuster dir -u <url> -w <wordlist>`,
+`curl -sI <url>`). Use `search_knowledge_base` for techniques, and
+`read_local_file` to read saved scan output. For long-running scans, use the
+shell-session tools (`create_shell_session`, `send_to_session`, ...).
 
 ## Behavior
 1. **Start broad, go deep**: Ping sweep → port scan → service version → script scan.

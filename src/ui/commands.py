@@ -119,7 +119,7 @@ class CommandHandler:
     def _auto(self, args: str):
         """Run autonomous VAPT. Usage: /auto <target_url>"""
         if not args.strip():
-            return "Usage: /auto <target_url> — e.g., /auto http://localhost:9999", None
+            return "Usage: /auto <target_url> — e.g., /auto http://127.0.0.1:8080", None
 
         target = args.strip()
         if not target.startswith(("http://", "https://")):
@@ -274,14 +274,13 @@ class CommandHandler:
         if not self.tools:
             return "No tools loaded."
 
-        # Group tools by category
+        # Group tools by category. CVA exposes generic tools — specific scanners
+        # (nmap, gobuster, sqlmap, ...) are run through execute_shell_command.
         categories = {
-            "Recon": ["nmap_scan", "whatweb_scan", "curl_request"],
-            "Enumeration": ["gobuster_dir", "ffuf_fuzz"],
-            "Vulnerability": ["nikto_scan", "search_exploitdb"],
-            "Exploitation": ["sqlmap_scan", "hydra_bruteforce", "execute_sandboxed_script"],
-            "Research": ["search_web"],
-            "Utility": ["execute_shell_command", "hash_identify", "read_local_file"],
+            "Execution": ["execute_shell_command", "execute_sandboxed_script"],
+            "Read": ["read_local_file"],
+            "Exploit Research": ["search_exploits", "examine_exploit"],
+            "Knowledge": ["search_knowledge_base"],
             "Sessions": ["create_shell_session", "send_to_session",
                          "get_session_output", "list_shell_sessions", "terminate_session"],
         }
