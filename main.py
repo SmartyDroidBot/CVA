@@ -19,7 +19,9 @@ from langchain_core.tools import StructuredTool
 from src.config import settings
 from src.ui import cli
 from src.ui.commands import CommandHandler
-from src.orchestrator import Orchestrator, THREAD_ID
+from src.engine import PentestEngine
+from src.brain.llm_provider import get_llm
+from src.brain.thinking import parse_thinking, strip_thinking
 from src.tracker.task_tree import TaskTree
 from src.reporting.generator import ReportGenerator, Finding
 from src.memory.summarizer import Summarizer
@@ -183,23 +185,42 @@ def main():
         tools = _apply_approval_gate(tools)
         cli.print_status("Approval gate active (use /approval off to disable).")
 
-    # 4. Initialize orchestrator
-    cli.print_status(f"Initializing agent (mode: {settings.agent_mode})...")
-    orchestrator = Orchestrator(tools=tools, mode=settings.agent_mode)
-
-    # 5. Session store
+    # 4. Session store
     session_store = _init_session_store()
     if recorder is not None:
         recorder.session_store = session_store   # persist findings when available
 
-    # 6. Other subsystems
+    # 5. Tracker + logger (built before the engine, which drives them)
     task_tree = TaskTree()
     session_logger = SessionLogger()
-    summarizer = Summarizer(llm=orchestrator.llm)
+
+    # 6. Execution engine (planner/executor). Interactive turns call engine.answer;
+    #    tool calls/results and analysis render live via this display callback.
+    def _display(kind, data):
+        if kind == "assistant":
+            raw = data.get("text", "")
+            if settings.show_thinking:
+                parsed = parse_thinking(raw)
+                if parsed.thinking.strip():
+                    cli.print_status(f"💭 {parsed.thinking.strip()[:800]}", style="dim italic")
+                text = parsed.content
+            else:
+                text = strip_thinking(raw)
+            if text and text.strip():
+                cli.print_agent_response(text)
+        elif kind == "tool_result":
+            cli.print_tool_result(data.get("name", ""), data.get("output", ""))
+
+    cli.print_status("Initializing agent (planner/executor engine)...")
+    engine = PentestEngine(
+        llm=get_llm(), tools=tools, kb=rag, task_graph=task_tree,
+        session_logger=session_logger, on_event=_display,
+    )
+    summarizer = Summarizer(llm=engine.llm)
 
     # 7. Command handler
     cmd_handler = CommandHandler(
-        orchestrator=orchestrator,
+        orchestrator=engine,
         tools=tools,
         session_store=session_store,
         task_tree=task_tree,
@@ -266,9 +287,7 @@ def main():
             elif action and action.startswith("inject:"):
                 # /run output injection into agent context
                 inject_text = action[7:]
-                orchestrator.inject_message(
-                    HumanMessage(content=inject_text), THREAD_ID
-                )
+                engine.inject_message(HumanMessage(content=inject_text))
                 cli.print_status("Command output injected into agent context.")
             continue
 
@@ -292,7 +311,7 @@ def main():
         rag_ctx = rag.get_context(phase, user_input)
 
         # Build enhanced input — target is injected once at session level via
-        # orchestrator.set_target(), not repeated in every message.
+        # engine.set_target(), not repeated in every message.
         if rag_ctx:
             enhanced_input = (
                 f"{user_input}\n\n"
@@ -302,63 +321,9 @@ def main():
         else:
             enhanced_input = user_input
 
-        # ── Agent invocation ─────────────────────────────────────────────────
+        # ── Agent turn (engine renders live via _display) ────────────────────
         try:
-            if settings.show_thinking:
-                # Streaming mode for thinking display
-                stream = orchestrator.stream(enhanced_input, THREAD_ID)
-                result = cli.stream_agent_response(stream)
-
-                response_content = result.get("content", "")
-                tool_results = result.get("tool_results", [])
-
-                if not response_content and not tool_results:
-                    cli.print_status("Agent produced no response.", style="yellow")
-                elif response_content:
-                    cli.print_agent_response(response_content)
-
-                # Show tool results
-                for tr in tool_results:
-                    cli.print_tool_result(tr["name"], tr["content"])
-                    session_logger.log_tool_result(tr["name"], tr["content"])
-
-                    # Track in task tree
-                    if task_tree:
-                        task_tree.add_action(
-                            action=f"Tool: {tr['name']}",
-                            tool=tr["name"],
-                            result_summary=tr["content"][:100],
-                        )
-            else:
-                # Non-streaming mode
-                result = orchestrator.invoke(enhanced_input, THREAD_ID)
-                messages = result.get("messages", [])
-
-                tool_cmds = {}  # tool_call_id -> command string (for phase inference)
-                for msg in messages:
-                    if isinstance(msg, AIMessage):
-                        for tc in (getattr(msg, "tool_calls", None) or []):
-                            args = tc.get("args", {}) or {}
-                            tool_cmds[tc.get("id")] = (
-                                args.get("command", "") if isinstance(args, dict) else ""
-                            )
-                        if msg.content:
-                            content = msg.content if isinstance(msg.content, str) else str(msg.content)
-                            cli.print_agent_response(content)
-                            session_logger.log_agent_response(content)
-
-                    elif isinstance(msg, ToolMessage):
-                        cli.print_tool_result(msg.name, msg.content)
-                        session_logger.log_tool_result(msg.name, msg.content)
-
-                        if task_tree:
-                            task_tree.add_action(
-                                action=f"Tool: {msg.name}",
-                                tool=msg.name,
-                                result_summary=msg.content[:100],
-                                command=tool_cmds.get(getattr(msg, "tool_call_id", None), ""),
-                            )
-
+            engine.answer(enhanced_input)
         except KeyboardInterrupt:
             cli.print_status("\nAgent interrupted by user.", style="yellow")
             continue
@@ -371,12 +336,12 @@ def main():
             continue
 
         # ── Summarization check ──────────────────────────────────────────────
-        messages = orchestrator.get_messages(THREAD_ID)
+        messages = engine.get_messages()
         if summarizer.should_summarize(messages):
             try:
                 summary_text, new_messages = summarizer.summarize(messages)
                 if summary_text:
-                    orchestrator.update_messages(new_messages, THREAD_ID)
+                    engine.update_messages(new_messages)
                     cli.print_status(f"Context summarized ({len(messages)} → {len(new_messages)} messages).")
                     session_logger.log_event("summary", summary_text[:200])
 
@@ -389,8 +354,7 @@ def main():
         # ── Auto-save to session store ───────────────────────────────────────
         if session_store and cmd_handler.current_session_id:
             try:
-                messages = orchestrator.get_messages(THREAD_ID)
-                session_store.save_messages(cmd_handler.current_session_id, messages)
+                session_store.save_messages(cmd_handler.current_session_id, engine.get_messages())
             except Exception:
                 pass
 

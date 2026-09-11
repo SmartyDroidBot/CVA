@@ -133,3 +133,46 @@ def test_run_respects_max_tasks():
     graph = eng.run("goal")
     done = [t for t in graph.all_tasks() if t.status == "done"]
     assert len(done) == 1   # stopped after the cap
+
+
+# ── Interactive (answer) + orchestrator-compatible surface ────────────────────
+
+def test_answer_runs_a_turn_and_calls_tool(engine):
+    produced = engine.answer("scan the target")
+    assert engine._tool.calls == [{"command": "nmap -sV t"}]
+    # History holds the human turn plus the produced messages.
+    assert engine.history[0].content == "scan the target"
+    assert len(produced) >= 2
+
+
+def test_answer_accumulates_history(engine):
+    engine.answer("first request")
+    n1 = len(engine.history)
+    engine.answer("second request")
+    assert len(engine.history) > n1
+    assert any(getattr(m, "content", "") == "second request" for m in engine.history)
+
+
+def test_invoke_wraps_answer(engine):
+    out = engine.invoke("do a scan")
+    assert "messages" in out and out["messages"]
+
+
+def test_set_target_and_active_agent(engine):
+    engine.set_target("http://x/")
+    assert engine.target == "http://x"          # trailing slash trimmed
+    assert engine.graph.target == "http://x"
+    assert isinstance(engine.active_agent, str)
+
+
+def test_get_and_update_messages(engine):
+    engine.answer("x")
+    assert engine.get_messages()
+    engine.update_messages([])
+    assert engine.get_messages() == []
+
+
+def test_inject_message_appends(engine):
+    from langchain_core.messages import HumanMessage
+    engine.inject_message(HumanMessage(content="/run output here"))
+    assert engine.history[-1].content == "/run output here"

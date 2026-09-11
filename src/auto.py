@@ -193,9 +193,8 @@ Start with Phase 1. Call your FIRST tool NOW.
 class AutoRunner:
     """Drives the fully autonomous VAPT pipeline.
 
-    Architecture: Single create_react_agent with ALL tools.
-    The agent self-directs through all VAPT phases. We stream every
-    message (thinking, tool calls, results, analysis) in real time.
+    Architecture: wraps the shared PentestEngine (planner → task graph →
+    per-task ReAct executor) and renders its events with a Rich UI in real time.
     """
 
     def __init__(self, target: str, tools: list, model_override: str = None,
@@ -277,7 +276,8 @@ class AutoRunner:
             console.print(f"  [bold white]▶ Task {task.id}: "
                           f"{escape(task.description)}[/bold white]")
         elif kind == "assistant":
-            text = data.get("text", "")
+            raw = data.get("text", "")
+            text = strip_thinking(raw)
             if not self._looks_like_hallucinated_calls(text):
                 self._print_ai_response(text)
             self._detect_phase(text)

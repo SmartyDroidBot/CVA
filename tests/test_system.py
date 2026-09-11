@@ -177,16 +177,17 @@ def run_system_checks():
         console.print(f"  ✗ {e}")
         results["commands"] = f"FAIL: {e}"
     
-    # ── 10. Orchestrator ──
-    console.print("\n[bold]TEST 10: Orchestrator (Agent)[/bold]")
+    # ── 10. Engine ──
+    console.print("\n[bold]TEST 10: PentestEngine[/bold]")
     try:
-        from src.orchestrator import Orchestrator
-        orch = Orchestrator(tools=tools)
-        console.print(f"  ✓ Agent created with {len(tools)} tools")
-        results["orchestrator"] = "PASS"
+        from src.engine import PentestEngine
+        from src.brain.llm_provider import get_llm
+        eng = PentestEngine(llm=get_llm(), tools=tools, target="http://t")
+        console.print(f"  ✓ Engine created with {len(tools)} tools")
+        results["engine"] = "PASS"
     except Exception as e:
         console.print(f"  ✗ {e}")
-        results["orchestrator"] = f"FAIL: {e}"
+        results["engine"] = f"FAIL: {e}"
     
     # ── Summary ──
     console.print("\n[bold cyan]╔══ Results Summary ══╗[/bold cyan]")

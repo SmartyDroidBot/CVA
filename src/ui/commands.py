@@ -14,7 +14,6 @@ import subprocess
 import sys
 from typing import Optional, Tuple
 from src.config import settings
-from src.orchestrator import THREAD_ID
 from src.memory.session_logger import SessionLogger
 
 
@@ -200,17 +199,11 @@ class CommandHandler:
             return f"✗ Failed to switch model: {e}"
 
     def _mode(self, args: str) -> str:
-        if not args:
-            return f"Current mode: {settings.agent_mode}\nUsage: /mode supervisor|single"
-        mode = args.strip().lower()
-        if mode not in ("supervisor", "single"):
-            return "Usage: /mode supervisor|single"
-        settings.agent_mode = mode
-        if self.orchestrator:
-            self.orchestrator.mode = mode
-            # _build() dispatches on self.mode to _build_supervisor()/_build_single().
-            self.orchestrator.graph = self.orchestrator._build()
-        return f"✓ Agent mode switched to: {mode}"
+        return (
+            "CVA now uses a single unified planner/executor engine — the old "
+            "supervisor/single modes no longer apply.\n"
+            "Use /model to switch the LLM and /agent to see the current phase."
+        )
 
     def _agent(self) -> str:
         if self.orchestrator and hasattr(self.orchestrator, 'active_agent'):
@@ -422,7 +415,7 @@ class CommandHandler:
                     elif msg_type == "system":
                         restored.append(SystemMessage(content=content))
                 if restored:
-                    self.orchestrator.update_messages(restored, THREAD_ID)
+                    self.orchestrator.update_messages(restored)
 
             msg_count = len(saved_msgs)
             return f"✓ Loaded session: {subarg} ({msg_count} messages, target: {target or 'none'})\n  Log: {self.session_logger.log_path}"
@@ -431,7 +424,7 @@ class CommandHandler:
             if not self.current_session_id:
                 return "No active session. Use: /sessions new"
             if self.orchestrator:
-                messages = self.orchestrator.get_messages(THREAD_ID)
+                messages = self.orchestrator.get_messages()
                 self.session_store.save_messages(self.current_session_id, messages)
                 if self.task_tree:
                     self.session_store.sessions.update_one(
