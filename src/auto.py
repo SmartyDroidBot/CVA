@@ -47,6 +47,11 @@ console = Console(highlight=False)
 
 # ── Styles ───────────────────────────────────────────────────────────────────
 
+_PHASE_NUM = {
+    "reconnaissance": 1, "enumeration": 2, "vulnerability_analysis": 3,
+    "exploitation": 4, "post_exploitation": 5, "reporting": 6,
+}
+
 SEVERITY_STYLES = {
     "critical": "bold red",
     "high":     "bold bright_red",
@@ -223,63 +228,60 @@ class AutoRunner:
             elif model and provider == "openai":
                 settings.openai_model = model
 
-        # Build the single react agent
-        self._build_agent()
+        # Build the shared planner/executor engine
+        self._build_engine()
 
     def _extract_host(self, target: str) -> str:
         from urllib.parse import urlparse
         parsed = urlparse(target)
         return parsed.hostname or target
 
-    def _build_agent(self):
-        """Build a single create_react_agent with all tools.
-
-        Wraps each tool to truncate its output before it goes back into
-        the LLM context — prevents context window overflow on large scans.
-        """
-        from langgraph.prebuilt import create_react_agent
-        from langgraph.checkpoint.memory import MemorySaver
-        from langchain_core.tools import BaseTool, tool as tool_decorator
+    def _build_engine(self):
+        """Build the shared PentestEngine (planner + per-task ReAct executor)."""
+        from src.engine import PentestEngine
 
         self.llm = get_llm()
-        system_prompt = get_vapt_system_prompt(self.target, self.host)
-        self.checkpointer = MemorySaver()
-
-        def _trim_tool_messages(state: dict) -> dict:
-            """Trim large tool outputs before LLM call to prevent context overflow.
-
-            pre_model_hook receives the full graph state and must return a dict
-            with a 'messages' key containing the (possibly modified) message list.
-            """
-            messages = state.get("messages", [])
-            trimmed = []
-            for m in messages:
-                if isinstance(m, ToolMessage):
-                    content = m.content if isinstance(m.content, str) else str(m.content)
-                    if len(content) > 3000:
-                        head = content[:1500]
-                        tail = content[-750:]
-                        omitted = len(content) - len(head) - len(tail)
-                        content = (
-                            f"{head}\n\n[... {omitted} chars trimmed to save context ...]\n\n{tail}"
-                        )
-                    trimmed.append(ToolMessage(
-                        content=content,
-                        tool_call_id=m.tool_call_id,
-                        name=getattr(m, "name", "tool"),
-                    ))
-                else:
-                    trimmed.append(m)
-            return {"messages": trimmed}
-
-        self.agent = create_react_agent(
-            self.llm,
+        self.engine = PentestEngine(
+            llm=self.llm,
             tools=self.tools,
-            checkpointer=self.checkpointer,
-            prompt=system_prompt,
-            pre_model_hook=_trim_tool_messages,
+            target=self.target,
+            session_logger=self.session_logger,
+            on_event=self._on_engine_event,
         )
-        self.thread_id = f"auto_{int(time.time())}"
+
+    # ── Engine event → Rich display bridge ─────────────────────────────────
+
+    def _on_engine_event(self, kind: str, data: dict):
+        """Render engine events with the existing Rich helpers."""
+        if self._stop:
+            return
+        if kind == "planned":
+            tasks = data.get("tasks", [])
+            console.print(f"\n  [bold cyan]Planned {len(tasks)} tasks:[/bold cyan]")
+            for t in tasks:
+                console.print(f"    • [{t.phase.value}] {escape(t.description)}")
+        elif kind == "task_start":
+            task = data["task"]
+            self._print_phase(task.phase.value.replace("_", " "),
+                              _PHASE_NUM.get(task.phase.value, 1))
+            console.print(f"  [bold white]▶ Task {task.id}: "
+                          f"{escape(task.description)}[/bold white]")
+        elif kind == "assistant":
+            text = data.get("text", "")
+            if not self._looks_like_hallucinated_calls(text):
+                self._print_ai_response(text)
+            self._detect_phase(text)
+            self._extract_findings(text)
+        elif kind == "tool_call":
+            self._print_tool_call(data.get("name", ""), data.get("args", {}))
+        elif kind == "tool_result":
+            name, output = data.get("name", ""), data.get("output", "")
+            self._print_tool_output(name, output)
+            self._print_status_bar()
+            self._extract_findings(output)
+            self.report_gen.add_evidence(name, name, output[:2000])
+        elif kind in ("task_error", "plan_error"):
+            console.print(f"  [red]{kind}: {data.get('error', '')}[/red]")
 
     def _cap_output(self, raw) -> str:
         """Truncate tool output to avoid LLM context overflow."""
@@ -500,87 +502,6 @@ class AutoRunner:
         lower = text.lower()
         return any(ind.lower() in lower for ind in indicators)
 
-    # ── Core Streaming Loop ───────────────────────────────────────────────
-
-    def _stream_run(self, prompt: str) -> str:
-        """Run the react agent and stream ALL output in real time.
-
-        Uses stream_mode='updates' which yields completed node outputs:
-        - 'agent' node → AI response + tool_calls list
-        - 'tools' node → ToolMessage results
-
-        More reliable than 'messages' mode because we get complete,
-        final messages rather than partial chunks requiring reassembly.
-        """
-        config = {"configurable": {"thread_id": self.thread_id}}
-        all_content = []
-
-        try:
-            stream = self.agent.stream(
-                {"messages": [HumanMessage(content=prompt)]},
-                config=config,
-                stream_mode="updates",
-            )
-
-            for update in stream:
-                if self._stop:
-                    break
-
-                # Each update is a dict: {node_name: {messages: [...]}}
-                for node_name, node_state in update.items():
-                    messages = node_state.get("messages", [])
-
-                    for msg in messages:
-                        if isinstance(msg, AIMessage):
-                            content = msg.content
-                            actual_calls = (msg.tool_calls
-                                           if hasattr(msg, "tool_calls") and msg.tool_calls
-                                           else [])
-
-                            if isinstance(content, str) and content.strip():
-                                parsed = parse_thinking(content)
-                                if parsed.thinking and parsed.thinking.strip():
-                                    self._print_thinking(parsed.thinking)
-                                clean = parsed.content.strip()
-                                if clean:
-                                    # Warn if model described tool calls as text
-                                    if not actual_calls and self._looks_like_hallucinated_calls(clean):
-                                        console.print(
-                                            "\n  [bold red]⚠ WARNING: Model wrote tool calls as text "
-                                            "instead of executing them (hallucination).[/bold red]\n"
-                                            "  [yellow]Consider switching model: --model ollama:qwen3:8b[/yellow]"
-                                        )
-                                    self._print_ai_response(clean)
-                                    all_content.append(clean)
-                                    self._detect_phase(clean)
-                                    self._extract_findings(clean)
-
-                            # Show actual tool calls the LLM made (before execution)
-                            for tc in actual_calls:
-                                name = tc.get("name", "")
-                                args = tc.get("args", {})
-                                if name:
-                                    self._print_tool_call(name, args)
-
-                        elif isinstance(msg, ToolMessage):
-                            tool_name = getattr(msg, "name", "tool")
-                            output = msg.content or ""
-                            self._print_tool_output(tool_name, output)
-                            self.session_logger.log_tool_result(tool_name, output)
-                            self._print_status_bar()
-                            self._extract_findings(output)
-                            self.report_gen.add_evidence(tool_name, tool_name, output[:2000])
-
-        except KeyboardInterrupt:
-            console.print("\n  [yellow]Interrupted by user — finishing...[/yellow]")
-            self._stop = True
-        except Exception as e:
-            console.print(f"\n  [red]Stream error: {e}[/red]")
-            if settings.debug_mode:
-                traceback.print_exc()
-
-        return "\n\n".join(all_content)
-
     # ── Report Generation ─────────────────────────────────────────────────
 
     def _generate_report(self) -> str:
@@ -610,7 +531,14 @@ List EVERY vulnerability you confirmed with its severity, CVSS score, and one-li
 Be concise, factual, and professional."""
 
         console.print("  [bold yellow]◆ Generating executive summary...[/bold yellow]\n")
-        exec_summary = self._stream_run(summary_prompt)
+        try:
+            resp = self.llm.invoke([
+                SystemMessage(content="You are a professional penetration test report writer."),
+                HumanMessage(content=summary_prompt),
+            ])
+            exec_summary = getattr(resp, "content", "") or ""
+        except Exception as e:
+            exec_summary = f"(Executive summary generation failed: {e})"
 
         # Build report
         md_content = self.report_gen.generate_markdown()
@@ -652,63 +580,16 @@ Be concise, factual, and professional."""
         console.print(f"  [cyan]Approval gate:[/cyan] DISABLED (auto mode)")
         console.print()
 
-        # Phase 1 - Start with the full VAPT prompt
-        self._print_phase("Reconnaissance", 1)
-
-        initial_prompt = f"""BEGIN the penetration test against {self.target}.
-
-Start with Phase 1 — Reconnaissance. Execute these commands now, adapting to the target:
-1. whatweb {self.target}
-2. nmap -sV -sC --open {self.host}
-3. curl -sI {self.target}/
-4. curl -s {self.target}/robots.txt
-
-After recon, proceed immediately to enumeration, then vulnerability analysis,
-then exploitation, then post-exploitation.
-
-Work through ALL phases without stopping. Execute tools immediately."""
-
-        response = self._stream_run(initial_prompt)
-
-        # Continue driving the agent through remaining phases if it stopped.
-        # These are generic, target-adaptive prompts — the agent fills in the
-        # concrete endpoints/params it discovered during earlier phases.
-        phase_prompts = [
-            (2, "Enumeration", f"Continue to Phase 2 — ENUMERATION against {self.target}:\n"
-             f"1. gobuster dir -u {self.target} -w /usr/share/wordlists/dirb/common.txt -q --no-error -t 20 2>&1 | head -40\n"
-             f"2. Probe the interesting paths/endpoints you found during recon (curl -s <url>).\n"
-             f"3. Enumerate any non-web services nmap reported (SMB/FTP/SNMP/etc.).\n"),
-
-            (3, "Vulnerability Analysis", f"Continue to Phase 3 — VULNERABILITY ANALYSIS against {self.target}. "
-             f"For each input/endpoint you discovered, test and state VULNERABLE or NOT:\n"
-             f"1. SQL injection on parameters (e.g. sqlmap -u '<url-with-param>' --batch --level 1 --risk 1).\n"
-             f"2. Reflected/stored XSS on search and form fields.\n"
-             f"3. Broken access control / IDOR on API endpoints.\n"
-             f"4. Sensitive file or directory exposure.\n"
-             f"5. Known CVEs for identified service versions (use search_exploits).\n"),
-
-            (4, "Exploitation", f"Continue to Phase 4 — EXPLOITATION against {self.target}. "
-             f"Exploit every confirmed vulnerability, capturing evidence:\n"
-             f"1. Demonstrate concrete impact (data access, auth bypass, token capture, ...).\n"
-             f"2. Save any credentials/tokens to /tmp/ for reuse.\n"
-             f"Mark each as CONFIRMED EXPLOITED or FAILED.\n"),
-
-            (5, "Post-Exploitation", f"Continue to Phase 5 — POST-EXPLOITATION against {self.target}:\n"
-             f"1. Use any access gained to enumerate users/data and escalate where possible.\n"
-             f"2. Access application secrets/configuration if reachable.\n"
-             f"3. Summarize what data was compromised and the business impact.\n"
-             f"4. Rate the overall severity of the breach.\n"),
-        ]
-
-        for phase_num, phase_name, prompt in phase_prompts:
-            if self._stop:
-                break
-            # Check if agent already covered this phase
-            if self.current_phase in ("reporting",):
-                break
-
-            self._print_phase(phase_name, phase_num)
-            self._stream_run(prompt)
+        # The engine plans the engagement into a task graph and executes each
+        # task (planner → task graph → per-task ReAct executor). Display is
+        # driven by _on_engine_event.
+        goal = (f"Perform a complete, professional penetration test of "
+                f"{self.target} and report all findings.")
+        try:
+            self.engine.run(goal)
+        except KeyboardInterrupt:
+            console.print("\n  [yellow]Interrupted by user — finishing...[/yellow]")
+            self._stop = True
 
         # Generate report
         if not self._stop:
