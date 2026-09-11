@@ -1,121 +1,96 @@
 # MCP Setup Guide
 
-CVA uses the Model Context Protocol (MCP) to expose Kali Linux security tools to the LangGraph agent. Tools are implemented in `src/mcp_server/kali.py` and loaded into the agent by `src/tools/mcp_client.py`.
+CVA uses the Model Context Protocol (MCP) to expose security tooling to the LangGraph agent. Servers live in `src/mcp_server/` and are loaded by `src/tools/mcp_client.py`, driven by `config/mcp_servers.yaml`.
 
-## How It Works
+## How it works
 
 ```
-main.py
-  └─ get_mcp_tools()                   # src/tools/mcp_client.py
-       └─ stdio MCP connection
-            └─ src/mcp_server/kali.py  # Kali tools server
-                 └─ LangChain StructuredTools → LangGraph agent
+main.py / auto.py
+  └─ get_mcp_tools()                     # src/tools/mcp_client.py
+       └─ reads config/mcp_servers.yaml  # one entry per server
+            └─ for each enabled server: stdio MCP connection
+                 ├─ src/mcp_server/kali.py      (cva_core)
+                 └─ src/mcp_server/exploitdb.py (exploitdb)
+                      └─ LangChain StructuredTools → agent
 ```
 
-`McpClient` connects to `kali.py` over stdio, discovers available tools, converts them to LangChain `StructuredTool` objects, and passes them to the `Orchestrator`. The agent then calls them through the standard ReAct tool-use loop.
+`get_mcp_tools()` loads **every enabled** server in `config/mcp_servers.yaml`, discovers each server's tools, converts them to LangChain `StructuredTool`s, and merges them. All MCP calls run on a dedicated background event loop (see `_get_loop()`), which keeps async MCP happy under Python 3.13.
 
-## Built-in Kali Tools
+## Design: generic tools, not one-per-binary
 
-These tools are available immediately after `uv sync` as long as the underlying binaries are installed on the host:
+CVA deliberately exposes a small set of **generic** tools rather than a wrapper per binary. The agent runs `nmap`, `gobuster`, `sqlmap`, `curl`, etc. *through* `execute_shell_command`. This keeps the tool surface small and lets the agent use any installed tool without new code.
 
-| Tool | Binary Required | Description |
-|---|---|---|
-| `nmap_scan` | `nmap` | TCP/UDP port scanning |
-| `nikto_scan` | `nikto` | Web server vulnerability scan |
-| `gobuster_dir` | `gobuster` | Directory/file brute-forcing |
-| `ffuf_fuzz` | `ffuf` | Web fuzzing |
-| `sqlmap_scan` | `sqlmap` | SQL injection detection |
-| `hydra_bruteforce` | `hydra` | Login brute-forcing |
-| `whatweb_scan` | `whatweb` | Web technology fingerprinting |
-| `curl_request` | `curl` | HTTP request runner |
-| `search_exploitdb` | `searchsploit` | Exploit-DB search |
-| `search_web` | — | Web search via API |
-| `execute_shell_command` | — | Raw shell command execution |
-| `execute_sandboxed_script` | Docker | Script execution in a container |
-| `hash_identify` | — | Hash type identification |
+### Tools exposed today
 
-Use `/tools` inside CVA to see exactly which tools loaded and their descriptions.
+| Tool | Server | Binary/Runtime | Description |
+|---|---|---|---|
+| `execute_shell_command` | `kali.py` | shell | Run any shell command (nmap, gobuster, sqlmap, …) |
+| `read_local_file` | `kali.py` | — | Read a local file (scan output, wordlists) |
+| `execute_sandboxed_script` | `kali.py` | Docker | Run a script inside a container |
+| `search_exploits` | `exploitdb.py` | `searchsploit` | Search Exploit-DB |
+| `examine_exploit` | `exploitdb.py` | `searchsploit` | Show a specific Exploit-DB entry's source |
 
-## Adding External MCP Servers
+Use `/tools` inside CVA to see exactly what loaded.
 
-Edit `config/mcp_servers.yaml` to add extra MCP servers. CVA's MCP client currently connects to `src/mcp_server/kali.py` by default. To route traffic to a different server, update `McpClient.__init__` in `src/tools/mcp_client.py`:
+## Adding an MCP server
 
-```python
-class McpClient:
-    def __init__(self, server_script: str = "src/mcp_server/kali.py"):
+Add an entry under `mcp_servers:` in `config/mcp_servers.yaml` — no code changes needed:
+
+```yaml
+mcp_servers:
+  filesystem:
+    command: npx
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "/home"]
+    description: "Local filesystem access"
+    enabled: true
 ```
 
-### Example — add a filesystem MCP server
+Each entry supports `command`, `args`, optional `env`, `description`, and `enabled`. When `command: python`, CVA runs it with the project's interpreter. Set `enabled: false` to keep a config without loading it (as the bundled `metasploit` entry does).
 
-1. Install the server:
-   ```bash
-   npm install -g @modelcontextprotocol/server-filesystem
-   ```
+## Creating a custom MCP server
 
-2. Add its YAML entry to `config/mcp_servers.yaml`:
-   ```yaml
-   filesystem:
-     command: npx
-     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home"]
-     enabled: true
-   ```
-
-3. To load it alongside `kali.py`, instantiate multiple `McpClient` objects in `src/tools/mcp_client.py` and merge the returned tool lists.
-
-## Creating a Custom MCP Server
-
-Any Python file that implements the MCP stdio protocol can serve as a tool source:
+Any Python file using the MCP SDK works. The bundled servers use `FastMCP`:
 
 ```python
 # src/mcp_server/my_tools.py
-from mcp.server import Server
-from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.server.fastmcp import FastMCP
 
-app = Server("my-tools")
+mcp = FastMCP("my-tools")
 
-@app.list_tools()
-async def list_tools():
-    return [Tool(name="my_tool", description="Does something", inputSchema={
-        "type": "object",
-        "properties": {"param": {"type": "string"}},
-        "required": ["param"],
-    })]
-
-@app.call_tool()
-async def call_tool(name: str, arguments: dict):
-    if name == "my_tool":
-        result = do_something(arguments["param"])
-        return [TextContent(type="text", text=result)]
+@mcp.tool()
+async def my_tool(param: str) -> str:
+    """Does something useful."""
+    return do_something(param)
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(stdio_server(app))
+    mcp.run()
 ```
 
-Then point `McpClient` at it:
+Then register it in `config/mcp_servers.yaml`:
 
-```python
-client = McpClient(server_script="src/mcp_server/my_tools.py")
+```yaml
+  my_tools:
+    command: python
+    args: ["src/mcp_server/my_tools.py"]
+    enabled: true
 ```
 
-## Security Considerations
+## Security considerations
 
-- `execute_shell_command` runs commands with the permissions of the CVA process — use with care and only against authorised targets
-- Set `SANDBOX_ENABLED=true` in `.env` to route script execution through a Docker container
-- Only test systems you are authorised to test
+- `execute_shell_command` runs with the CVA process's permissions. CVA screens commands through a block/approve gate (`src/guardrails/command.py`), controllable with `/approval on|off`, but you are still responsible for scope.
+- `execute_sandboxed_script` routes script execution through a Docker container; Docker must be installed and running.
+- Only test systems you are authorised to test.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `Failed to load MCP tools` | Run `python main.py` from the project root |
+| `Failed to load MCP tools` | Run from the project root; ensure `config/mcp_servers.yaml` is valid |
 | Tool returns "command not found" | Install the binary (`sudo apt install nmap`) |
-| `execute_sandboxed_script` fails | Install Docker and set `SANDBOX_ENABLED=true` |
-| Tool list is empty | Check that `src/mcp_server/kali.py` exists and is valid Python |
+| `execute_sandboxed_script` fails | Install/start Docker |
+| Tool list is empty | Check that the server scripts in `src/mcp_server/` exist and import cleanly |
 
-## Learn More
+## Learn more
 
 - [MCP Specification](https://modelcontextprotocol.io/)
 - [Python MCP SDK](https://github.com/modelcontextprotocol/python-sdk)
-- [MCP Tool Servers](https://github.com/modelcontextprotocol)

@@ -206,11 +206,8 @@ class CommandHandler:
         settings.agent_mode = mode
         if self.orchestrator:
             self.orchestrator.mode = mode
-            self.orchestrator.graph = (
-                self.orchestrator._build_supervisor_graph()
-                if mode == "supervisor"
-                else self.orchestrator._build_single_graph()
-            )
+            # _build() dispatches on self.mode to _build_supervisor()/_build_single().
+            self.orchestrator.graph = self.orchestrator._build()
         return f"✓ Agent mode switched to: {mode}"
 
     def _agent(self) -> str:

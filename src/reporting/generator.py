@@ -2,6 +2,7 @@
 
 import os
 from datetime import datetime, timezone
+from html import escape as _esc
 from typing import List, Dict, Optional
 from string import Template
 
@@ -163,33 +164,47 @@ class ReportGenerator:
                 color = Finding.SEVERITY_COLORS.get(sev, "#666")
                 bar_html += f'<div style="width:{pct}%;background:{color};height:30px;display:inline-block;text-align:center;color:white;line-height:30px;font-size:12px;" title="{sev}">{count} {sev}</div>'
         
-        # Build findings HTML
+        # Build findings HTML (all finding-derived text is HTML-escaped to
+        # avoid corrupting/injecting the report with tool output that contains
+        # <, > or &).
         findings_html = ""
         for i, f in enumerate(self._sorted_findings(), 1):
             color = Finding.SEVERITY_COLORS.get(f.severity, "#666")
+            title = _esc(f.title)
+            category = _esc(f.category)
+            cve = _esc(f.cve)
+            cvss = _esc(f.cvss)
+            affected = _esc(f.affected)
+            description = _esc(f.description)
+            evidence = _esc(f.evidence[:1000])
+            remediation = _esc(f.remediation)
             findings_html += f'''
             <div style="border-left:4px solid {color};padding:12px 16px;margin:12px 0;background:#1a1a2e;border-radius:0 8px 8px 0;">
-                <h3 style="margin:0;color:#e0e0e0;">{i}. {f.title}
+                <h3 style="margin:0;color:#e0e0e0;">{i}. {title}
                     <span style="background:{color};color:white;padding:2px 8px;border-radius:4px;font-size:12px;margin-left:8px;">{f.severity.upper()}</span>
                 </h3>
-                {"<p style='color:#aaa;margin:4px 0;'><strong>CVE:</strong> " + f.cve + "</p>" if f.cve else ""}
-                {"<p style='color:#aaa;margin:4px 0;'><strong>CVSS:</strong> " + f.cvss + "</p>" if f.cvss else ""}
-                <p style="color:#aaa;margin:4px 0;"><strong>Category:</strong> {f.category}</p>
-                {"<p style='color:#aaa;margin:4px 0;'><strong>Affected:</strong> " + f.affected + "</p>" if f.affected else ""}
-                {"<p style='color:#ccc;margin:8px 0;'>" + f.description + "</p>" if f.description else ""}
-                {"<pre style='background:#0d0d1a;padding:8px;border-radius:4px;color:#4ade80;font-size:12px;overflow-x:auto;'>" + f.evidence[:1000] + "</pre>" if f.evidence else ""}
-                {"<p style='color:#60a5fa;margin:8px 0;'><strong>Remediation:</strong> " + f.remediation + "</p>" if f.remediation else ""}
+                {"<p style='color:#aaa;margin:4px 0;'><strong>CVE:</strong> " + cve + "</p>" if f.cve else ""}
+                {"<p style='color:#aaa;margin:4px 0;'><strong>CVSS:</strong> " + cvss + "</p>" if f.cvss else ""}
+                <p style="color:#aaa;margin:4px 0;"><strong>Category:</strong> {category}</p>
+                {"<p style='color:#aaa;margin:4px 0;'><strong>Affected:</strong> " + affected + "</p>" if f.affected else ""}
+                {"<p style='color:#ccc;margin:8px 0;'>" + description + "</p>" if f.description else ""}
+                {"<pre style='background:#0d0d1a;padding:8px;border-radius:4px;color:#4ade80;font-size:12px;overflow-x:auto;'>" + evidence + "</pre>" if f.evidence else ""}
+                {"<p style='color:#60a5fa;margin:8px 0;'><strong>Remediation:</strong> " + remediation + "</p>" if f.remediation else ""}
             </div>'''
-        
-        # Evidence appendix
+
+        # Evidence appendix (also escaped)
         evidence_html = ""
         for i, ev in enumerate(self.raw_evidence, 1):
+            ev_tool = _esc(str(ev.get('tool', '')))
+            ev_ts = _esc(str(ev.get('timestamp', '')))
+            ev_cmd = _esc(str(ev.get('command', '')))
+            ev_out = _esc(str(ev.get('output', ''))[:2000])
             evidence_html += f'''
             <div style="margin:12px 0;padding:12px;background:#1a1a2e;border-radius:8px;">
-                <h4 style="color:#e0e0e0;margin:0;">A{i}. {ev['tool']}</h4>
-                <p style="color:#aaa;font-size:12px;">{ev['timestamp']}</p>
-                <code style="color:#60a5fa;">$ {ev['command']}</code>
-                <pre style="background:#0d0d1a;padding:8px;border-radius:4px;color:#4ade80;font-size:11px;max-height:300px;overflow:auto;">{ev['output'][:2000]}</pre>
+                <h4 style="color:#e0e0e0;margin:0;">A{i}. {ev_tool}</h4>
+                <p style="color:#aaa;font-size:12px;">{ev_ts}</p>
+                <code style="color:#60a5fa;">$ {ev_cmd}</code>
+                <pre style="background:#0d0d1a;padding:8px;border-radius:4px;color:#4ade80;font-size:11px;max-height:300px;overflow:auto;">{ev_out}</pre>
             </div>'''
         
         html = f'''<!DOCTYPE html>
@@ -197,7 +212,7 @@ class ReportGenerator:
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Pentest Report — {self.target}</title>
+    <title>Pentest Report — {_esc(self.target)}</title>
     <style>
         * {{ margin:0; padding:0; box-sizing:border-box; }}
         body {{ font-family:'Segoe UI',system-ui,sans-serif; background:#0f0f23; color:#e0e0e0; padding:40px; line-height:1.6; }}
@@ -219,9 +234,9 @@ class ReportGenerator:
         <div class="header">
             <h1>🛡️ Penetration Test Report</h1>
             <div class="meta">
-                <p><strong>Target:</strong> {self.target}</p>
-                <p><strong>Scope:</strong> {self.scope}</p>
-                <p><strong>Tester:</strong> {self.tester}</p>
+                <p><strong>Target:</strong> {_esc(self.target)}</p>
+                <p><strong>Scope:</strong> {_esc(self.scope)}</p>
+                <p><strong>Tester:</strong> {_esc(self.tester)}</p>
                 <p><strong>Period:</strong> {self.start_time.strftime("%Y-%m-%d")} → {datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}</p>
             </div>
         </div>
@@ -273,13 +288,13 @@ class ReportGenerator:
         
         if fmt in ("md", "both", "markdown"):
             md_path = os.path.join(output_dir, f"{base}.md")
-            with open(md_path, "w") as f:
+            with open(md_path, "w", encoding="utf-8") as f:
                 f.write(self.generate_markdown())
             saved.append(md_path)
-        
+
         if fmt in ("html", "both"):
             html_path = os.path.join(output_dir, f"{base}.html")
-            with open(html_path, "w") as f:
+            with open(html_path, "w", encoding="utf-8") as f:
                 f.write(self.generate_html())
             saved.append(html_path)
         

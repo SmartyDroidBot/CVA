@@ -9,9 +9,14 @@ from rich.console import Console
 console = Console()
 
 
-def test_system():
-    """Run all system integration checks."""
-    console.print("\n[bold cyan]╔══ CVA v2 System Integration Test ══╗[/bold cyan]\n")
+def run_system_checks():
+    """Run all system integration checks.
+
+    This is a manual, service-dependent harness (MongoDB/Qdrant/Ollama/MCP),
+    not a pytest unit test — hence the non-``test_`` name so pytest does not
+    collect it. Run directly with ``python tests/test_system.py``.
+    """
+    console.print("\n[bold cyan]╔══ CVA System Integration Test ══╗[/bold cyan]\n")
     
     results = {}
     tools = []
@@ -47,10 +52,11 @@ def test_system():
         tools = get_mcp_tools()
         tool_names = [t.name for t in tools]
         console.print(f"  ✓ {len(tools)} tools: {', '.join(tool_names)}")
-        # Check new tools
-        new_tools = ["sqlmap_scan", "hydra_bruteforce", "whatweb_scan", "ffuf_fuzz", "curl_request", "hash_identify"]
-        loaded_new = [t for t in new_tools if t in tool_names]
-        console.print(f"  ✓ New tools: {', '.join(loaded_new)} ({len(loaded_new)}/{len(new_tools)})")
+        # Check the core tools actually exposed by the MCP servers today.
+        core_tools = ["execute_shell_command", "read_local_file",
+                      "execute_sandboxed_script", "search_exploits", "examine_exploit"]
+        loaded_core = [t for t in core_tools if t in tool_names]
+        console.print(f"  ✓ Core tools: {', '.join(loaded_core)} ({len(loaded_core)}/{len(core_tools)})")
         results["mcp_tools"] = "PASS"
     except Exception as e:
         console.print(f"  ✗ {e}")
@@ -61,15 +67,13 @@ def test_system():
     try:
         shell_tool = next((t for t in tools if t.name == "execute_shell_command"), None)
         if shell_tool:
-            result = shell_tool.run({"command": "echo 'CVA v2 enhanced'"})
-            assert "CVA v2 enhanced" in result
-            console.print(f"  ✓ Shell: {result.strip()}")
-        
-        hash_tool = next((t for t in tools if t.name == "hash_identify"), None)
-        if hash_tool:
-            result = hash_tool.run({"hash_value": "5d41402abc4b2a76b9719d911017c592"})
-            assert "MD5" in result
-            console.print(f"  ✓ Hash identify: MD5 detected")
+            result = str(shell_tool.invoke({"command": "echo CVA_enhanced"}))
+            assert "CVA_enhanced" in result
+            console.print(f"  ✓ Shell: {result.strip()[:60]}")
+
+        exploit_tool = next((t for t in tools if t.name == "search_exploits"), None)
+        if exploit_tool:
+            console.print("  ✓ search_exploits tool available")
         results["tools_exec"] = "PASS"
     except Exception as e:
         console.print(f"  ✗ {e}")
@@ -199,5 +203,5 @@ def test_system():
 
 
 if __name__ == "__main__":
-    success = test_system()
+    success = run_system_checks()
     sys.exit(0 if success else 1)

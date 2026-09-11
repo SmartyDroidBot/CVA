@@ -144,6 +144,29 @@ class TaskTree:
         phase = self.current_phase.value.replace('_', ' ').title()
         return f"Target: {self.target or 'not set'} | Phase: {phase} | Actions: {len(self.nodes)}"
     
+    def get_context_for_agent(self) -> str:
+        """Compact progress snapshot to inject into an agent's prompt.
+
+        Returns an empty string when nothing has happened yet, so callers can
+        cheaply skip injecting empty context.
+        """
+        if not self.nodes:
+            return ""
+
+        phase = self.current_phase.value.replace("_", " ").title()
+        lines = [
+            "## PENTEST PROGRESS",
+            f"Target: {self.target or 'not set'}",
+            f"Current phase: {phase}",
+            f"Actions so far: {len(self.nodes)}",
+            "Recent actions:",
+        ]
+        for node in self.nodes[-5:]:
+            tool_str = f" [{node.tool}]" if node.tool else ""
+            summary = f" → {node.result_summary[:80]}" if node.result_summary else ""
+            lines.append(f"  - {node.action[:60]}{tool_str}{summary}")
+        return "\n".join(lines)
+
     def to_dict(self) -> dict:
         return {
             "target": self.target,

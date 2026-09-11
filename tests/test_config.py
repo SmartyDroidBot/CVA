@@ -15,8 +15,18 @@ def test_default_settings():
     assert s.mongo_uri == "mongodb://localhost:27017"
     assert s.qdrant_host == "localhost"
     assert s.qdrant_port == 6333
-    assert s.sandbox_enabled is True
-    assert s.max_messages_before_summary == 20
+    assert s.max_messages_before_summary == 30
+    assert s.kb_collection == "cva_kb"
+    assert s.agent_mode == "supervisor"
+    assert s.require_approval is True
+
+
+def test_cloud_provider_defaults():
+    """Cloud provider model defaults are present so /model works out of the box."""
+    s = Settings()
+    assert s.openai_model
+    assert s.anthropic_model
+    assert s.google_model
 
 
 def test_provider_names():

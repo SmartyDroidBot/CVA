@@ -4,9 +4,25 @@ import pytest
 from src.memory.session_store import SessionStore
 
 
+def _mongo_available() -> bool:
+    try:
+        from pymongo import MongoClient
+        from src.config import settings
+        MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=800).server_info()
+        return True
+    except Exception:
+        return False
+
+
+requires_mongo = pytest.mark.skipif(
+    not _mongo_available(), reason="MongoDB not available"
+)
+
+
+@requires_mongo
 class TestSessionStore:
     """Tests for MongoDB session persistence."""
-    
+
     @pytest.fixture
     def store(self):
         """Create a session store and clean up after."""

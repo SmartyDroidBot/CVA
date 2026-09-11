@@ -1,17 +1,24 @@
 # CVA — Cognitive VAPT Assistant
 
-An AI-powered penetration testing assistant with a Rich terminal UI. CVA guides you through the full VAPT lifecycle using a ReAct agent backed by Ollama (or cloud LLMs) and a suite of Kali Linux security tools exposed via the Model Context Protocol (MCP).
+An AI-powered penetration-testing assistant with a Rich terminal UI. CVA guides you through the VAPT lifecycle using a LangGraph agent backed by a local LLM (Ollama) or a cloud model (OpenAI / Anthropic / Google), with security tooling exposed over the Model Context Protocol (MCP).
+
+> **Status:** active development. CVA runs as an interactive assistant today; the autonomous (`--auto`) driver and the multi-agent supervisor are being hardened. See `docs/` for design notes.
 
 ## Features
 
-- **ReAct Agent** — LangGraph-based reasoning loop that selects tools, explains its thinking, and summarizes findings
-- **Rich TUI** — Gemini CLI-style terminal interface with colour, panels, markdown rendering, and a status line
-- **VAPT Lifecycle Tracking** — Automatic phase tracking (Recon → Enum → Vuln → Exploit → Post-Exploit → Report)
-- **MCP Tool Integration** — Security tools exposed through `src/mcp_server/kali.py` (nmap, nikto, gobuster, sqlmap, hydra, ffuf, searchsploit, and more)
-- **Session Management** — MongoDB-backed sessions to save/resume pentest conversations
-- **Report Generation** — Markdown and HTML pentest reports from collected findings
-- **Multi-Provider LLM** — Ollama (local) or OpenAI / Anthropic / Google (cloud) via `.env`
-- **Context Summarisation** — Auto-compresses long conversations to preserve context window
+- **LangGraph agent** — a supervisor that routes to specialist personas (recon / exploit / post-exploit / reporter), plus a single-agent and an autonomous mode.
+- **Rich TUI** — colourful terminal interface with panels, markdown rendering, live `<think>` streaming, and a status line.
+- **VAPT phase tracking** — automatic phase inference (Recon → Enum → Vuln → Exploit → Post-Exploit → Report) from the tools used.
+- **MCP tool integration** — security tooling exposed through MCP servers (`src/mcp_server/`), driven by the agent.
+- **Knowledge base (RAG)** — static pentest knowledge always on, plus optional Qdrant vector retrieval over HackTricks / PayloadsAllTheThings / GTFOBins / OWASP CheatSheets.
+- **Session management** — optional MongoDB-backed sessions; always-on per-session file logs.
+- **Report generation** — Markdown and HTML pentest reports from collected findings.
+- **Guardrails** — prompt-injection screening on input and a block/approve gate for dangerous shell commands.
+- **Multi-provider LLM** — Ollama (local) or OpenAI / Anthropic / Google (cloud) via `.env`, switchable at runtime.
+
+## Environment
+
+CVA is designed to run on **Kali Linux** (or another Linux pentest distro): it shells out to security tools and uses POSIX PTYs for interactive sessions. The repository can live on any filesystem, but the app and its virtualenv should be created and run from Linux.
 
 ## Quick Start
 
@@ -19,24 +26,24 @@ An AI-powered penetration testing assistant with a Rich terminal UI. CVA guides 
 
 | Dependency | Required | Notes |
 |---|---|---|
+| Linux (Kali recommended) | ✅ | POSIX shell + PTY features are used |
 | Python ≥ 3.12 | ✅ | |
 | [uv](https://astral.sh/uv) | ✅ | Fast Python package manager |
 | [Ollama](https://ollama.ai) | ✅ (default) | Or set a cloud provider in `.env` |
-| MongoDB | Optional | Sessions stored in-memory without it |
-| Qdrant | Optional | Vector store for RAG knowledge base |
-| Kali Linux tools | Required for tools | `nmap`, `nikto`, `gobuster`, etc. |
+| MongoDB | Optional | Without it, sessions are not persisted (file logs still work) |
+| Qdrant | Optional | Vector store for the RAG knowledge base |
+| Kali security tools | For real tooling | `nmap`, `nikto`, `gobuster`, `sqlmap`, `searchsploit`, etc. |
 
 ### Installation
 
 ```bash
-# Clone the repo
 git clone <repo-url>
 cd CVA
 
-# Install dependencies
+# Install dependencies (creates .venv)
 uv sync
 
-# Pull a model
+# Pull a local model (or configure a cloud provider in .env)
 ollama pull qwen3:8b
 
 # Copy and edit environment config
@@ -47,10 +54,18 @@ $EDITOR .env
 ### Running CVA
 
 ```bash
+# Interactive assistant
 python main.py
+# or via the CLI wrapper (adds flags)
+python cva.py
+
+# Autonomous run against a target
+python cva.py --auto http://TARGET
 ```
 
-You will be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at any time to see available commands.
+`cva.py` flags: `--auto`, `--model <provider:model>`, `--mode supervisor|single`, `--no-guardrails`, `--no-approval`, `--debug`.
+
+You'll be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at any time.
 
 ## Slash Commands
 
@@ -58,105 +73,83 @@ You will be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at 
 |---|---|
 | `/help` | Show all commands |
 | `/target <ip/url>` | Set the pentest target |
-| `/run <cmd>` | Execute a raw shell command and auto-parse output |
-| `/tools` | List all loaded MCP tools by category |
-| `/progress` | Show VAPT phase progress and recent actions |
-| `/findings` | Summary of findings from the current session |
-| `/sessions [list\|new\|load\|save\|delete]` | Manage MongoDB sessions |
+| `/auto <target_url>` | Run an autonomous VAPT pass |
+| `/run <cmd>` | Execute a raw shell command; inject output into agent context |
+| `/tools` | List loaded MCP tools |
+| `/progress` | Show VAPT phase progress and task tree |
+| `/findings` | Findings from the current session |
 | `/report [md\|html\|both]` | Generate a pentest report |
+| `/sessions [list\|new\|load <id>\|save\|delete <id>]` | Manage MongoDB sessions |
 | `/model <provider:model>` | Switch LLM at runtime (e.g. `/model ollama:llama3`) |
-| `/debug [on\|off]` | Toggle raw tool-output display |
+| `/mode <supervisor\|single>` | Switch agent architecture |
+| `/agent` | Show the active specialist agent |
+| `/kb [status\|search <q>\|update]` | Knowledge base status / search / re-ingest |
+| `/log [tail N]` | View the current session log |
+| `/bg [list\|status <id>]` | Background task status |
+| `/think [on\|off]` | Show/hide LLM reasoning |
+| `/rawtools [on\|off]` | Show/hide raw tool output |
+| `/approval [on\|off]` | Toggle the command-approval gate |
+| `/guardrails [on\|off]` | Toggle input guardrails |
+| `/debug [on\|off]` | Toggle debug mode |
 | `/settings` | Show current settings |
 | `/clear` | Clear the screen |
-| `/exit` | Exit CVA (auto-saves current session) |
+| `/exit` | Exit CVA (auto-saves the current session) |
 
 ## Configuration
 
-### Environment Variables (`.env`)
+### Environment variables (`.env`)
 
-Copy `.env.example` to `.env` and edit as needed:
+Copy `.env.example` to `.env` and edit as needed. All settings are optional and fall back to defaults defined in `src/config.py` (Pydantic settings). Key groups: LLM provider + model, agent mode, guardrails, session/Mongo, Qdrant/KB, and UI/debug toggles. See `.env.example` for the full annotated list.
 
-```dotenv
-# LLM Provider: ollama | openai | anthropic | google
-LLM_PROVIDER=ollama
-OLLAMA_MODEL=qwen3:8b
-OLLAMA_BASE_URL=http://localhost:11434
-
-# Cloud LLM keys (uncomment as needed)
-# OPENAI_API_KEY=sk-...
-# ANTHROPIC_API_KEY=sk-ant-...
-# GOOGLE_API_KEY=...
-
-# Optional services
-MONGO_URI=mongodb://localhost:27017
-QDRANT_HOST=localhost
-QDRANT_PORT=6333
-
-# App settings
-DEBUG_MODE=false
-SANDBOX_ENABLED=false
-```
-
-### Config Files (`config/`)
+### Config files (`config/`)
 
 | File | Purpose |
 |---|---|
-| `config/config.yaml` | App defaults (timeout, etc.) |
-| `config/agents.yaml` | Agent personas (name, system prompt, temperature) |
-| `config/mcp_servers.yaml` | External MCP server definitions |
+| `config/mcp_servers.yaml` | External MCP server definitions (loaded at startup) |
+
+> Agent personas and app defaults are **not** YAML-driven: personas live in `src/agents/*.py` and defaults in `src/config.py`.
 
 ## Architecture
 
 ```
 CVA/
-├── main.py                   # Entry point — terminal UI loop
+├── main.py                     # Interactive entry point — terminal UI loop
+├── cva.py                      # CLI wrapper (flags, --auto, --mode, --model)
 ├── src/
-│   ├── orchestrator.py       # LangGraph ReAct agent
-│   ├── config.py             # Pydantic settings (reads .env)
-│   ├── state.py              # Shared state types
-│   ├── ui/
-│   │   ├── cli.py            # Rich TUI: banner, panels, input
-│   │   └── commands.py       # Slash command handler
-│   ├── brain/
-│   │   ├── llm_provider.py   # Multi-provider LLM factory
-│   │   └── thinking.py       # Parse <think> blocks from LLM output
-│   ├── tools/
-│   │   └── mcp_client.py     # Bridges MCP server tools to LangChain
-│   ├── mcp_server/
-│   │   └── kali.py           # MCP server: Kali Linux security tools
-│   ├── memory/
-│   │   ├── session_store.py  # MongoDB session persistence
-│   │   └── summarizer.py     # LLM-based context compressor
-│   ├── tracker/
-│   │   └── task_tree.py      # VAPT phase + action tracker
-│   ├── knowledge/
-│   │   ├── rag.py            # Qdrant RAG retrieval
-│   │   └── static_kb.py      # Static pentest knowledge base
-│   ├── parser/
-│   │   └── intelligent_parser.py  # Parses raw tool output into findings
-│   └── reporting/
-│       └── generator.py      # Markdown/HTML report generator
-├── config/                   # YAML configs
-├── docs/                     # Extended documentation
-├── tests/                    # Pytest test suite
-├── .env.example              # Environment variable template
-└── pyproject.toml            # Project metadata and dependencies
+│   ├── orchestrator.py         # LangGraph supervisor + specialist graph
+│   ├── auto.py                 # Autonomous ReAct driver
+│   ├── config.py               # Pydantic settings (reads .env)
+│   ├── agents/                 # Specialist personas: recon, exploit, post_exploit, reporter, registry
+│   ├── ui/                     # cli.py (Rich TUI) + commands.py (slash commands)
+│   ├── brain/                  # llm_provider.py (multi-provider) + thinking.py (<think> parsing)
+│   ├── tools/                  # mcp_client.py, kb_tool.py, shell_session.py
+│   ├── mcp_server/             # MCP servers: kali.py, exploitdb.py
+│   ├── memory/                 # session_store.py, session_logger.py, summarizer.py
+│   ├── tracker/                # task_tree.py (VAPT phase + action tracker)
+│   ├── knowledge/              # rag.py, static_kb.py, vector_kb.py
+│   ├── guardrails/             # command.py (dangerous-command gate), injection.py
+│   └── reporting/              # generator.py (Markdown/HTML reports)
+├── scripts/ingest_kb.py        # Build the Qdrant knowledge base
+├── config/mcp_servers.yaml     # MCP server definitions
+├── docs/                       # Extended documentation
+├── tests/                      # Pytest suite
+├── .env.example                # Environment template
+└── pyproject.toml              # Project metadata and dependencies
 ```
 
-## Available MCP Tools
+## Available MCP tools
 
-Tools are provided by `src/mcp_server/kali.py` and loaded automatically on startup. Use `/tools` inside CVA to see what's loaded.
+The MCP servers in `src/mcp_server/` currently expose a small set of **generic** tools; the agent runs specific utilities (nmap, gobuster, sqlmap, …) *through* `execute_shell_command`. Use `/tools` to see what's loaded.
 
-| Category | Tools |
-|---|---|
-| **Recon** | `nmap_scan`, `whatweb_scan`, `curl_request` |
-| **Enumeration** | `gobuster_dir`, `ffuf_fuzz` |
-| **Vulnerability** | `nikto_scan`, `search_exploitdb` |
-| **Exploitation** | `sqlmap_scan`, `hydra_bruteforce`, `execute_sandboxed_script` |
-| **Research** | `search_web` |
-| **Utility** | `execute_shell_command`, `hash_identify` |
+| Tool | Server | Purpose |
+|---|---|---|
+| `execute_shell_command` | `kali.py` | Run any shell command (nmap, gobuster, sqlmap, curl, …) |
+| `read_local_file` | `kali.py` | Read a local file (e.g. scan output, wordlists) |
+| `execute_sandboxed_script` | `kali.py` | Run a script in a Docker sandbox |
+| `search_exploits` | `exploitdb.py` | Search Exploit-DB via `searchsploit` |
+| `examine_exploit` | `exploitdb.py` | Show the source of a specific Exploit-DB entry |
 
-## VAPT Workflow Example
+## VAPT workflow example
 
 ```
 CVA ❯ /target 192.168.1.100
@@ -167,25 +160,20 @@ CVA ❯ /findings
 CVA ❯ /report md
 ```
 
-## Running Tests
+## Running tests
 
 ```bash
 uv run pytest tests/ -v
 ```
 
+Tests that need external services (MongoDB, Qdrant, Ollama, the MCP servers) **skip** automatically when those services aren't available. `tests/test_system.py` and `tests/test_e2e_juiceshop.py` are manual integration scripts — run them directly (`python tests/test_system.py`).
+
 ## Troubleshooting
 
-### "Failed to load MCP tools"
-- Ensure `python main.py` is run from the project root
-- Check that `src/mcp_server/kali.py` is present
-- Security tools (nmap, nikto, etc.) must be installed on the host
-
-### "Failed to initialize agent"
-- Confirm Ollama is running: `ollama serve`
-- Or set a cloud provider via `LLM_PROVIDER=openai` in `.env`
-
-### "MongoDB not available"
-- CVA falls back to in-memory sessions — you can still use `/sessions new` but data is lost on exit
+- **"Failed to load MCP tools"** — run from the project root; ensure `src/mcp_server/kali.py` exists and the security tools are installed on the host.
+- **"Failed to initialize agent"** — confirm Ollama is running (`ollama serve`), or set a cloud provider (`LLM_PROVIDER=openai`, plus the API key) in `.env`.
+- **"MongoDB unavailable"** — CVA continues without session persistence; per-session file logs in `logs/` still record activity.
+- **Vector KB unavailable** — run `python scripts/ingest_kb.py` with Ollama + Qdrant running to build the `cva_kb` collection; until then CVA uses the static KB only.
 
 ## License
 

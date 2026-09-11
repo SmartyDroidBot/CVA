@@ -6,6 +6,21 @@ from src.tracker.task_tree import TaskTree
 from src.reporting.generator import ReportGenerator
 
 
+def _mongo_available() -> bool:
+    try:
+        from pymongo import MongoClient
+        from src.config import settings
+        MongoClient(settings.mongo_uri, serverSelectionTimeoutMS=800).server_info()
+        return True
+    except Exception:
+        return False
+
+
+requires_mongo = pytest.mark.skipif(
+    not _mongo_available(), reason="MongoDB not available"
+)
+
+
 class TestEnhancedCommands:
     """Tests for new slash commands."""
     
@@ -63,6 +78,7 @@ class TestEnhancedCommands:
         assert "Unknown" in output
 
 
+@requires_mongo
 class TestSessionCommands:
     """Tests for session management commands (requires MongoDB)."""
     
