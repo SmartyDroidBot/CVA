@@ -48,10 +48,9 @@ class Settings(BaseSettings):
     mongo_db: str = "cva"
 
     # ── Knowledge Base ────────────────────────────────────────────────────────
-    qdrant_host: str = "localhost"
-    qdrant_port: int = 6333
-    kb_collection: str = "cva_kb"
-    embedding_model: str = "nomic-embed-text"
+    # Retrieval backend (pluggable). "fts5" = local SQLite full-text search.
+    kb_backend: str = "fts5"
+    kb_db_path: str = "data/kb/cva_kb.sqlite3"
 
     # ── UI / Debug ────────────────────────────────────────────────────────────
     debug_mode: bool = False

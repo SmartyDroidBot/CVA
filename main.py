@@ -24,7 +24,7 @@ from src.tracker.task_tree import TaskTree
 from src.reporting.generator import ReportGenerator, Finding
 from src.memory.summarizer import Summarizer
 from src.memory.session_logger import SessionLogger
-from src.knowledge.rag import DoubleRAG
+from src.knowledge.rag import KnowledgeService
 
 
 # ── Tool Loading ─────────────────────────────────────────────────────────────
@@ -124,22 +124,20 @@ def _init_session_store():
 # ── RAG Knowledge System ─────────────────────────────────────────────────────
 
 def _init_rag():
-    """Initialize the DoubleRAG knowledge system."""
-    vector_kb = None
-    try:
-        from src.knowledge.vector_kb import VectorKB
-        vkb = VectorKB()
-        if vkb.available:
-            vector_kb = vkb
-            cli.print_status("Vector KB connected (Qdrant).")
-        else:
-            cli.print_status("Vector KB unavailable — using static KB only.", style="yellow")
-    except Exception:
-        cli.print_status("Vector KB init failed — using static KB only.", style="yellow")
+    """Initialize the knowledge system (pluggable; FTS5 lexical KB by default)."""
+    from src.knowledge.fts_kb import FTS5KnowledgeBase
 
-    rag = DoubleRAG(vector_kb=vector_kb)
-    cli.print_status("Static knowledge base loaded (always on).")
-    return rag, vector_kb
+    kb = FTS5KnowledgeBase(settings.kb_db_path)
+    if kb.available:
+        docs = kb.get_stats().get("documents", 0)
+        cli.print_status(f"Knowledge base loaded ({docs} docs, FTS5).")
+    else:
+        cli.print_status(
+            "Knowledge base empty — run `python scripts/ingest_kb.py` to build it.",
+            style="yellow",
+        )
+    rag = KnowledgeService([kb])
+    return rag, kb
 
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -148,7 +146,7 @@ def main():
     cli.print_banner()
 
     # 1. Knowledge system (built first so the KB tool can be wired into the agent)
-    rag, vector_kb = _init_rag()
+    rag, kb = _init_rag()
 
     # 2. Load tools
     cli.print_status("Loading tools...")
@@ -192,7 +190,7 @@ def main():
         task_tree=task_tree,
         report_gen=report_gen,
         session_logger=session_logger,
-        vector_kb=vector_kb,
+        kb=kb,
     )
 
     # 8. Auto-create session if configured

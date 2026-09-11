@@ -13,10 +13,9 @@ def test_default_settings():
     assert s.ollama_base_url == "http://localhost:11434"
     assert s.debug_mode is False
     assert s.mongo_uri == "mongodb://localhost:27017"
-    assert s.qdrant_host == "localhost"
-    assert s.qdrant_port == 6333
     assert s.max_messages_before_summary == 30
-    assert s.kb_collection == "cva_kb"
+    assert s.kb_backend == "fts5"
+    assert s.kb_db_path.endswith("cva_kb.sqlite3")
     assert s.agent_mode == "supervisor"
     assert s.require_approval is True
 

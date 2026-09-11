@@ -11,6 +11,7 @@ Changes from v2:
 """
 
 import subprocess
+import sys
 from typing import Optional, Tuple
 from src.config import settings
 from src.orchestrator import THREAD_ID
@@ -48,13 +49,13 @@ class CommandHandler:
 
     def __init__(self, orchestrator=None, tools=None,
                  session_store=None, task_tree=None, report_gen=None,
-                 session_logger: SessionLogger = None, vector_kb=None):
+                 session_logger: SessionLogger = None, kb=None):
         self.orchestrator = orchestrator
         self.tools = tools or []
         self.session_store = session_store
         self.task_tree = task_tree
         self.report_gen = report_gen
-        self.vector_kb = vector_kb
+        self.kb = kb
         self.session_logger = session_logger or SessionLogger()
         self.current_session_id = None
 
@@ -539,33 +540,33 @@ class CommandHandler:
         subarg = parts[1] if len(parts) > 1 else ""
 
         if subcmd == "status":
-            if not self.vector_kb:
-                return "Vector KB not initialized."
-            stats = self.vector_kb.get_stats()
+            if not self.kb:
+                return "Knowledge base not initialized."
+            stats = self.kb.get_stats()
             return (
                 f"╔══ Knowledge Base ══╗\n"
+                f"  Backend:    {stats.get('backend', 'n/a')}\n"
                 f"  Status:     {stats.get('status', 'unknown')}\n"
-                f"  Collection: {stats.get('collection', 'n/a')}\n"
-                f"  Chunks:     {stats.get('points', 0)}\n"
-                f"  Vectors:    {stats.get('vectors_count', 0)}\n"
+                f"  Documents:  {stats.get('documents', 0)}\n"
+                f"  Path:       {stats.get('path', 'n/a')}\n"
                 f"╚════════════════════╝"
             )
 
         elif subcmd == "search":
             if not subarg:
                 return "Usage: /kb search <query>"
-            if not self.vector_kb or not self.vector_kb.available:
-                return "Vector KB unavailable. Run: python scripts/ingest_kb.py"
-            results = self.vector_kb.search(subarg, limit=5)
+            if not self.kb or not self.kb.available:
+                return "Knowledge base unavailable. Run: python scripts/ingest_kb.py"
+            results = self.kb.search(subarg, limit=5)
             if not results:
                 return f"No results for: {subarg}"
             lines = [f"╔══ KB Search: '{subarg}' ══╗"]
             for i, r in enumerate(results, 1):
                 source = r["source"]
-                section = r.get("section", "")[:40]
+                section = str(r.get("section", ""))[:40]
                 score = r["score"]
-                text = r["text"][:150].replace("\n", " ")
-                lines.append(f"\n  [{i}] ({source}) {section} [score: {score:.3f}]")
+                text = str(r["text"])[:150].replace("\n", " ")
+                lines.append(f"\n  [{i}] ({source}) {section} [score: {score:.2f}]")
                 lines.append(f"      {text}...")
             lines.append(f"\n╚══ {len(results)} results ══╝")
             return "\n".join(lines)
@@ -574,8 +575,8 @@ class CommandHandler:
             import subprocess as sp
             try:
                 result = sp.run(
-                    ["python", "scripts/ingest_kb.py", "--skip-clone"],
-                    capture_output=True, text=True, timeout=600,
+                    [sys.executable, "scripts/ingest_kb.py", "--skip-clone"],
+                    capture_output=True, text=True, timeout=1200,
                     cwd=str(__import__("pathlib").Path(__file__).resolve().parent.parent.parent),
                 )
                 output = result.stdout[-500:] if result.stdout else ""

@@ -765,19 +765,13 @@ def run_auto(target: str, model: str = None):
     tools.extend(sess)
     console.print(f"  ✓ Session tools: {[t.name for t in sess]}")
 
-    # Register the knowledge-base search tool (static KB always on; vector KB
-    # when Qdrant is available).
+    # Register the knowledge-base search tool (FTS5 lexical KB).
     try:
-        from src.knowledge.rag import DoubleRAG
+        from src.config import settings as _settings
+        from src.knowledge.fts_kb import FTS5KnowledgeBase
+        from src.knowledge.rag import KnowledgeService
         from src.tools.kb_tool import setup_kb_tool, search_knowledge_base
-        vkb = None
-        try:
-            from src.knowledge.vector_kb import VectorKB
-            _v = VectorKB()
-            vkb = _v if _v.available else None
-        except Exception:
-            vkb = None
-        setup_kb_tool(DoubleRAG(vector_kb=vkb))
+        setup_kb_tool(KnowledgeService([FTS5KnowledgeBase(_settings.kb_db_path)]))
         tools.append(search_knowledge_base)
         console.print("  ✓ KB tool: search_knowledge_base")
     except Exception as e:

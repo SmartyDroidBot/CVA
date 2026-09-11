@@ -97,17 +97,18 @@ def run_system_checks():
         console.print(f"  ✗ {e}")
         results["mongodb"] = f"FAIL: {e}"
     
-    # ── 6. Qdrant ──
-    console.print("\n[bold]TEST 6: Qdrant Vector KB[/bold]")
+    # ── 6. Knowledge Base (FTS5) ──
+    console.print("\n[bold]TEST 6: Knowledge Base (FTS5)[/bold]")
     try:
-        from src.knowledge.vector_kb import VectorKB
-        kb = VectorKB()
+        from src.knowledge.fts_kb import FTS5KnowledgeBase
+        from src.config import settings
+        kb = FTS5KnowledgeBase(settings.kb_db_path)
         stats = kb.get_stats()
-        console.print(f"  ✓ Status: {stats.get('status', 'unknown')}, Points: {stats.get('points', '?')}")
-        results["qdrant"] = "PASS"
+        console.print(f"  ✓ Status: {stats.get('status', 'unknown')}, Documents: {stats.get('documents', '?')}")
+        results["knowledge"] = "PASS"
     except Exception as e:
         console.print(f"  ✗ {e}")
-        results["qdrant"] = f"FAIL: {e}"
+        results["knowledge"] = f"FAIL: {e}"
     
     # ── 7. Report Generator ──
     console.print("\n[bold]TEST 7: Report Generator[/bold]")
