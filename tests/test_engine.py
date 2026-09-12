@@ -176,3 +176,22 @@ def test_inject_message_appends(engine):
     from langchain_core.messages import HumanMessage
     engine.inject_message(HumanMessage(content="/run output here"))
     assert engine.history[-1].content == "/run output here"
+
+
+class RaisingLLM:
+    """LLM whose every call fails — simulates an unreachable endpoint."""
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        raise ConnectionError("[Errno 111] Connection refused")
+
+
+def test_run_reports_failure_when_llm_unreachable():
+    eng = PentestEngine(llm=RaisingLLM(), tools=[FakeTool()], target="t")
+    eng.run("pentest the target")
+    outcome = eng.run_outcome()
+    assert outcome["done"] == 0            # nothing succeeded
+    assert outcome["failed"] > 0           # tasks were attempted and failed
+    assert outcome["error"] is not None    # the failure reason is captured
+    assert "refused" in outcome["error"].lower()

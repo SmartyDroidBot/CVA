@@ -4,6 +4,50 @@ from langchain_ollama import ChatOllama
 from src.config import settings
 
 
+def check_llm_ready(provider: str = None) -> tuple[bool, str]:
+    """Cheap reachability/config check for the configured LLM.
+
+    Returns (ok, message). Callers should fail fast when ok is False instead of
+    running an engagement against an unreachable model (which otherwise fails
+    silently, one call at a time, and yields an empty report).
+    """
+    provider = (provider or settings.llm_provider).lower()
+
+    if provider == "ollama":
+        base = settings.ollama_base_url.rstrip("/")
+        model = settings.ollama_model
+        try:
+            import httpx
+            resp = httpx.get(f"{base}/api/tags", timeout=4.0)
+            resp.raise_for_status()
+            names = {m.get("name", "") for m in resp.json().get("models", [])}
+        except Exception as e:
+            return (False,
+                    f"LLM not reachable: Ollama at {base} ({e}).\n"
+                    f"  - Is Ollama running?  (ollama serve)\n"
+                    f"  - In WSL the Windows host is NOT localhost. Enable WSL mirrored\n"
+                    f"    networking, or set OLLAMA_BASE_URL to the host IP in .env.\n"
+                    f"    See README: 'Running the LLM from WSL'.")
+        if model and not any(
+            n == model or n.split(":")[0] == model.split(":")[0] for n in names
+        ):
+            return (False,
+                    f"Ollama is reachable at {base}, but model '{model}' is not pulled.\n"
+                    f"  - Pull it:  ollama pull {model}")
+        return (True, f"Ollama ready at {base} ({model}).")
+
+    if provider in ("openai", "anthropic", "google"):
+        key = getattr(settings, f"{provider}_api_key", "")
+        if not key:
+            return (False,
+                    f"Provider '{provider}' selected but {provider.upper()}_API_KEY "
+                    f"is not set in .env.")
+        return (True, f"Provider '{provider}' configured (API key present).")
+
+    return (False,
+            f"Unknown LLM provider '{provider}' — use: ollama | openai | anthropic | google.")
+
+
 def get_llm(provider: str = None, model: str = None):
     """
     Create a ChatModel instance based on provider.

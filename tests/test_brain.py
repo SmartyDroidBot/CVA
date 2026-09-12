@@ -98,3 +98,38 @@ class TestLLMProvider:
                 get_llm("openai")
         finally:
             settings.openai_api_key = original
+
+
+class TestLLMPreflight:
+    """Tests for check_llm_ready — the startup reachability check."""
+
+    def test_ollama_unreachable_is_not_ready(self, monkeypatch):
+        """A dead Ollama endpoint reports not-ready with an actionable message."""
+        from src.brain import llm_provider
+        from src.config import settings
+        # Port 1 is unused → immediate connection refusal (the Errno 111 case).
+        monkeypatch.setattr(settings, "ollama_base_url", "http://127.0.0.1:1")
+        ok, msg = llm_provider.check_llm_ready("ollama")
+        assert ok is False
+        assert "not reachable" in msg.lower()
+        assert "WSL" in msg   # includes the WSL hint
+
+    def test_cloud_without_key_is_not_ready(self, monkeypatch):
+        from src.brain import llm_provider
+        from src.config import settings
+        monkeypatch.setattr(settings, "anthropic_api_key", "")
+        ok, msg = llm_provider.check_llm_ready("anthropic")
+        assert ok is False
+        assert "ANTHROPIC_API_KEY" in msg
+
+    def test_cloud_with_key_is_ready(self, monkeypatch):
+        from src.brain import llm_provider
+        from src.config import settings
+        monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+        ok, msg = llm_provider.check_llm_ready("openai")
+        assert ok is True
+
+    def test_unknown_provider_is_not_ready(self):
+        from src.brain import llm_provider
+        ok, msg = llm_provider.check_llm_ready("bogus")
+        assert ok is False

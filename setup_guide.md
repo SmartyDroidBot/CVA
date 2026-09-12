@@ -34,6 +34,8 @@ Verify Ollama is running:
 ollama list
 ```
 
+> **Running CVA in WSL with Ollama on the Windows host?** `localhost:11434` inside WSL is not the host — see the README section "Running the LLM from WSL". CVA's startup preflight will tell you if the LLM is unreachable.
+
 ## 4. Configure the Environment
 
 ```bash

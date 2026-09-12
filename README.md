@@ -115,6 +115,22 @@ OLLAMA_BASE_URL=http://localhost:11434
 
 Override for a single run with `python cva.py --model <provider:model>`, or switch live with `/model <provider:model>`. A capable model is recommended for reliable multi-step tool use; small local models can loop or emit malformed tool calls.
 
+CVA runs a **reachability preflight** at startup: `--auto` aborts with a clear message if the LLM is unreachable (so it never produces an empty report), and interactive mode warns but lets you fix it with `/model`.
+
+### Running the LLM from WSL
+
+If CVA runs inside **WSL** (e.g. Kali) but Ollama runs on the **Windows host**, `localhost:11434` inside WSL is *not* the host — connections are refused (`Errno 111`) and the LLM appears down. Fix it one of two ways:
+
+- **WSL mirrored networking (preferred, Win 11 22H2+):** add to `%UserProfile%\.wslconfig`:
+  ```ini
+  [wsl2]
+  networkingMode=mirrored
+  ```
+  then `wsl --shutdown` and reopen. `localhost:11434` now reaches the host; no `.env` change.
+- **Point at the host IP:** on Windows set `OLLAMA_HOST=0.0.0.0` (so Ollama listens on all interfaces) and allow it through the firewall, then in `.env` set `OLLAMA_BASE_URL=http://<windows-host-ip>:11434` (the WSL→host gateway from `ip route show default`; it can change on restart unless mirrored networking is on).
+
+Simplest of all: run Ollama **inside** the WSL distro so `localhost` just works.
+
 ## Configuration
 
 All settings are optional and fall back to defaults in `src/config.py` (Pydantic settings, read from `.env`): LLM provider + models, guardrails, session/Mongo, knowledge base (`KB_BACKEND`/`KB_DB_PATH`), and UI/debug toggles. See `.env.example` for the full annotated list. The only YAML config is `config/mcp_servers.yaml` (MCP server definitions); agent personas live in `src/agents/*.py`.

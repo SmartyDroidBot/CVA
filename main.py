@@ -211,6 +211,17 @@ def main():
         elif kind == "tool_result":
             cli.print_tool_result(data.get("name", ""), data.get("output", ""))
 
+    # LLM reachability check. Interactive mode warns (you can fix it with /model)
+    # rather than exiting; each turn also surfaces errors clearly.
+    from src.brain.llm_provider import check_llm_ready
+    _ok, _msg = check_llm_ready()
+    if _ok:
+        cli.print_status(_msg)
+    else:
+        cli.print_error(_msg)
+        cli.print_status("The LLM is unreachable — fix it or use /model; messages will fail until then.",
+                         style="yellow")
+
     cli.print_status("Initializing agent (planner/executor engine)...")
     engine = PentestEngine(
         llm=get_llm(), tools=tools, kb=rag, task_graph=task_tree,

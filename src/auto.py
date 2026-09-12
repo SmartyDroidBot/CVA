@@ -212,6 +212,10 @@ class AutoRunner:
         self.report_gen.target = self.target
         self.report_gen.tester = "CVA v3 Auto Mode"
         self.session_logger = session_logger or SessionLogger()
+        # Ensure a log file exists so the run leaves a forensic trail
+        # (a bare SessionLogger() has no session and silently drops writes).
+        if not self.session_logger.session_id:
+            self.session_logger.switch_session(datetime.now().strftime("auto_%Y%m%d_%H%M%S"))
 
         # Structured findings via the record_finding tool (replaces keyword
         # extraction). findings stay in sync with the recorder for the summary.
@@ -448,6 +452,35 @@ class AutoRunner:
 
     # ── Report Generation ─────────────────────────────────────────────────
 
+    def _write_failed_report(self, reason: Optional[str]) -> str:
+        """Write a report that clearly marks the engagement as failed.
+
+        Used when every task failed (e.g. the LLM was unreachable) so we never
+        present a hollow "0 findings" report as a successful engagement.
+        """
+        console.print()
+        console.print(Rule("[bold red] ENGAGEMENT FAILED [/bold red]", style="bold red"))
+        reason = reason or "the model produced no successful steps"
+        console.print(f"  [red]No tasks completed — {escape(str(reason))}[/red]")
+        if "refused" in str(reason).lower() or "connect" in str(reason).lower():
+            console.print("  [yellow]The LLM looks unreachable. Check your provider/.env "
+                          "(see README: 'Running the LLM from WSL').[/yellow]")
+        os.makedirs("reports", exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        md_path = f"reports/auto_{ts}.md"
+        content = (
+            f"# Penetration Test Report — FAILED RUN\n\n"
+            f"**Target:** {self.target}\n"
+            f"**Status:** engagement did not complete — no tasks succeeded.\n"
+            f"**Reason:** {reason}\n\n"
+            f"No findings were produced because the engagement could not run. "
+            f"This is not a clean result — resolve the cause above and re-run.\n"
+        )
+        with open(md_path, "w", encoding="utf-8") as f:
+            f.write(content)
+        console.print(f"  [red]✗ Failed-run report:[/red] [cyan]{md_path}[/cyan]")
+        return md_path
+
     def _generate_report(self) -> str:
         """Generate the final report from discovered findings."""
         console.print()
@@ -484,10 +517,11 @@ Be concise, factual, and professional."""
         except Exception as e:
             exec_summary = f"(Executive summary generation failed: {e})"
 
-        # Build report
+        # Build report. generate_markdown() already emits an Executive Summary
+        # section, so the agent's narrative goes under a distinct heading.
         md_content = self.report_gen.generate_markdown()
         clean_summary = strip_thinking(exec_summary)
-        md_content += f"\n\n## Executive Summary\n\n{clean_summary}"
+        md_content += f"\n\n## Narrative Summary\n\n{clean_summary}"
 
         md_path = f"reports/auto_{ts}.md"
         html_path = f"reports/auto_{ts}.html"
@@ -535,11 +569,16 @@ Be concise, factual, and professional."""
             console.print("\n  [yellow]Interrupted by user — finishing...[/yellow]")
             self._stop = True
 
-        # Generate report
-        if not self._stop:
-            report_path = self._generate_report()
-        else:
+        # Decide what to report. If every task failed (e.g. the LLM became
+        # unreachable mid-run), report the failure clearly instead of writing a
+        # hollow "0 findings" success report.
+        outcome = self.engine.run_outcome()
+        if self._stop:
             report_path = "reports/interrupted.md"
+        elif outcome["total"] > 0 and outcome["done"] == 0:
+            report_path = self._write_failed_report(outcome.get("error"))
+        else:
+            report_path = self._generate_report()
 
         # Final summary
         elapsed = time.time() - self.start_time
@@ -605,6 +644,15 @@ def run_auto(target: str, model: str = None):
     if not tools:
         console.print("[red]Fatal: No tools loaded.[/red]")
         sys.exit(1)
+
+    # Fail fast if the LLM is unreachable — otherwise every model call fails
+    # silently and the run produces an empty report.
+    from src.brain.llm_provider import check_llm_ready
+    ok, msg = check_llm_ready()
+    if not ok:
+        console.print(f"\n[bold red]✗ {escape(msg)}[/bold red]\n")
+        sys.exit(1)
+    console.print(f"  [green]✓ {escape(msg)}[/green]")
 
     runner = AutoRunner(target=target, tools=tools, model_override=model)
 

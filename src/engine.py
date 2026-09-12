@@ -126,6 +126,7 @@ class PentestEngine:
         self.max_tasks = max_tasks
         self._llm_tools = llm.bind_tools(self.tools) if self.tools else llm
         self.history: List = []   # interactive conversation memory (BaseMessages)
+        self.last_error = None     # first task error of the most recent run()
 
     def _emit(self, kind: str, **data):
         try:
@@ -251,6 +252,7 @@ class PentestEngine:
 
     def run(self, goal: str) -> TaskTree:
         """Plan then execute tasks until the graph is drained or the cap is hit."""
+        self.last_error = None
         self.plan(goal)
         executed = 0
         while executed < self.max_tasks:
@@ -265,11 +267,25 @@ class PentestEngine:
                 self.graph.mark(task.id, "done", result=result[:500])
             except Exception as e:
                 self.graph.mark(task.id, "failed", result=str(e))
+                if self.last_error is None:
+                    self.last_error = str(e)
                 self._emit("task_error", task=task, error=str(e))
             self._emit("task_done", task=task)
             executed += 1
         self._emit("finished", executed=executed)
         return self.graph
+
+    def run_outcome(self) -> dict:
+        """Summary of the last run: task counts and the first error (if any).
+
+        Lets callers distinguish a real engagement from a run where every task
+        failed (e.g. the LLM was unreachable) instead of assuming success.
+        """
+        tasks = self.graph.all_tasks()
+        done = sum(1 for t in tasks if t.status == "done")
+        failed = sum(1 for t in tasks if t.status == "failed")
+        return {"done": done, "failed": failed, "total": len(tasks),
+                "error": self.last_error}
 
     # ── Interactive (single-turn) API ─────────────────────────────────────────
 
