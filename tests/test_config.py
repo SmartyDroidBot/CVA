@@ -16,7 +16,6 @@ def test_default_settings():
     assert s.max_messages_before_summary == 30
     assert s.kb_backend == "fts5"
     assert s.kb_db_path.endswith("cva_kb.sqlite3")
-    assert s.agent_mode == "supervisor"
     assert s.require_approval is True
 
 

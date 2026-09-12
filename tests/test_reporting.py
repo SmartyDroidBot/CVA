@@ -40,7 +40,7 @@ class TestReportGenerator:
     @pytest.fixture
     def gen(self):
         g = ReportGenerator()
-        g.target = "192.168.1.100"
+        g.target = "target.test"
         g.scope = "Internal network"
         return g
     
@@ -49,7 +49,7 @@ class TestReportGenerator:
         assert len(gen.findings) == 1
     
     def test_add_evidence(self, gen):
-        gen.add_evidence("nmap", "nmap -sV 192.168.1.100", "PORT   STATE SERVICE\n22/tcp open  ssh")
+        gen.add_evidence("nmap", "nmap -sV target.test", "PORT   STATE SERVICE\n22/tcp open  ssh")
         assert len(gen.raw_evidence) == 1
     
     def test_generate_markdown(self, gen):
@@ -57,7 +57,7 @@ class TestReportGenerator:
         gen.add_finding(Finding("Open Port 22", severity="info"))
         md = gen.generate_markdown()
         assert "Penetration Test Report" in md
-        assert "192.168.1.100" in md
+        assert "target.test" in md
         assert "SQL Injection" in md
         assert "CRITICAL" in md
         assert "Open Port 22" in md
@@ -66,7 +66,7 @@ class TestReportGenerator:
         gen.add_finding(Finding("XSS", severity="high", evidence="<script>alert(1)</script>"))
         html = gen.generate_html()
         assert "<!DOCTYPE html>" in html
-        assert "192.168.1.100" in html
+        assert "target.test" in html
         assert "XSS" in html
         assert "HIGH" in html
     

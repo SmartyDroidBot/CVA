@@ -51,13 +51,13 @@ docker compose up -d mongodb
 # or: mongod --dbpath /data/db
 ```
 
-### Qdrant — for RAG knowledge base lookups
+### Knowledge base — local FTS5 index (no service needed)
 
 ```bash
-docker compose up -d qdrant
+python scripts/ingest_kb.py     # builds data/kb/cva_kb.sqlite3
 ```
 
-Without these services CVA starts fine — sessions are in-memory only and RAG features are disabled.
+Without MongoDB, CVA still starts — sessions simply aren't persisted (file logs still work). The knowledge base is a local SQLite FTS5 index, so it needs no external service.
 
 ## 6. Run CVA
 

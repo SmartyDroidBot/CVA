@@ -1,9 +1,9 @@
 """LangChain tool that lets an agent query CVA's knowledge base mid-reasoning.
 
 The tool resolves against whatever knowledge source is registered via
-``setup_kb_tool`` — normally the merged ``DoubleRAG`` (static KB always on,
-Qdrant vector KB when available). It works as long as the static KB is present,
-and automatically gains semantic results once the vector store is populated.
+``setup_kb_tool`` — normally the ``KnowledgeService`` wrapping the local FTS5
+index. Any backend implementing ``KnowledgeSource`` works, so a future vector or
+hybrid backend is a drop-in with no change here.
 """
 
 from typing import Optional

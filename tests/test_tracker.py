@@ -10,15 +10,15 @@ class TestTaskTree:
     """Tests for VAPT progress tracking."""
     
     def test_create_tree(self):
-        tree = TaskTree(target="192.168.1.1")
-        assert tree.target == "192.168.1.1"
+        tree = TaskTree(target="target.test")
+        assert tree.target == "target.test"
         assert tree.current_phase == Phase.RECON
         assert len(tree.nodes) == 0
     
     def test_add_action(self):
-        tree = TaskTree(target="10.0.0.1")
+        tree = TaskTree(target="target.test")
         tree.add_action(action="Port scan", tool="execute_shell_command",
-                        result_summary="22,80,443 open", command="nmap -sV 10.0.0.1")
+                        result_summary="22,80,443 open", command="nmap -sV target.test")
         assert len(tree.nodes) == 1
         assert tree.nodes[0].phase == Phase.RECON
 
@@ -51,31 +51,31 @@ class TestTaskTree:
         assert TOOL_PHASE_MAP["create_shell_session"] == Phase.EXPLOIT
     
     def test_get_progress(self):
-        tree = TaskTree(target="10.0.0.1")
+        tree = TaskTree(target="target.test")
         tree.add_action("Port scan", "nmap_scan", "3 ports open")
         tree.add_action("Dir enum", "gobuster_dir", "5 dirs found")
         
         progress = tree.get_progress()
-        assert "10.0.0.1" in progress
+        assert "target.test" in progress
         assert "ACTIVE" in progress or "actions" in progress
         assert "Port scan" in progress or "nmap_scan" in progress
     
     def test_get_findings_summary(self):
-        tree = TaskTree(target="example.com")
+        tree = TaskTree(target="target.test")
         tree.add_action("Scan", "nmap_scan", "Port 80, 443 open")
         tree.add_action("Dir bust", "gobuster_dir", "/admin, /login found")
         
         summary = tree.get_findings_summary()
-        assert "example.com" in summary
+        assert "target.test" in summary
         assert "Port 80" in summary or "80" in summary
     
     def test_context_for_agent(self):
-        tree = TaskTree(target="test.com")
+        tree = TaskTree(target="target.test")
         tree.add_action("Initial scan", "nmap_scan", "80 open")
         
         ctx = tree.get_context_for_agent()
         assert "PENTEST PROGRESS" in ctx
-        assert "test.com" in ctx
+        assert "target.test" in ctx
     
     def test_empty_context(self):
         tree = TaskTree()
@@ -88,10 +88,10 @@ class TestTaskTree:
         assert tree.phase_completions[Phase.RECON] is True
     
     def test_to_dict(self):
-        tree = TaskTree(target="10.0.0.1")
+        tree = TaskTree(target="target.test")
         tree.add_action("Scan", "nmap_scan", "Open ports")
         d = tree.to_dict()
-        assert d["target"] == "10.0.0.1"
+        assert d["target"] == "target.test"
         assert len(d["nodes"]) == 1
 
 

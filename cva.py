@@ -2,19 +2,15 @@
 """CVA — Cognitive VAPT Assistant v3
 
 Usage:
-    # Interactive mode (default):
+    # Interactive (copilot) mode (default):
     python cva.py
 
-    # Autonomous mode — full VAPT, no interaction needed:
-    python cva.py --auto http://localhost:9999
-    python cva.py --auto http://localhost:9999 --model ollama:qwen3:8b
-    python cva.py --auto http://10.10.10.5 --model openai:gpt-4o
+    # Autonomous mode — full VAPT against an authorized target you provide:
+    python cva.py --auto <target-url>
+    python cva.py --auto <target-url> --model openai:gpt-4o
 
-    # Switch model in interactive mode:
+    # Switch model (overrides .env for this run):
     python cva.py --model ollama:llama3.1
-
-    # Single agent mode (no supervisor):
-    python cva.py --mode single
 """
 
 import sys
@@ -32,9 +28,9 @@ def parse_args():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python cva.py                                  # Interactive mode
-  python cva.py --auto http://localhost:9999     # Autonomous full VAPT
-  python cva.py --auto http://10.10.10.5 --model ollama:llama3.1
+  python cva.py                                  # Interactive (copilot) mode
+  python cva.py --auto <target-url>              # Autonomous full VAPT
+  python cva.py --auto <target-url> --model ollama:llama3.1
   python cva.py --model openai:gpt-4o            # Interactive with OpenAI
         """,
     )
@@ -42,18 +38,12 @@ Examples:
     parser.add_argument(
         "--auto",
         metavar="TARGET",
-        help="Autonomous mode: run full VAPT against TARGET (e.g. http://localhost:9999)",
+        help="Autonomous mode: run full VAPT against the authorized TARGET you provide",
     )
     parser.add_argument(
         "--model",
         metavar="PROVIDER:MODEL",
         help="LLM to use (e.g. ollama:qwen3:8b, openai:gpt-4o, anthropic:claude-sonnet-4-20250514)",
-    )
-    parser.add_argument(
-        "--mode",
-        choices=["supervisor", "single"],
-        default=None,
-        help="Agent mode: supervisor (default) or single (legacy one-agent)",
     )
     parser.add_argument(
         "--no-guardrails",
@@ -90,9 +80,6 @@ def apply_args(args):
                 settings.anthropic_model = model
             elif parts[0] == "google":
                 settings.google_model = model
-
-    if args.mode:
-        settings.agent_mode = args.mode
 
     if args.no_guardrails:
         settings.guardrails_enabled = False

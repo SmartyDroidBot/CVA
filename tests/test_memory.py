@@ -43,7 +43,7 @@ class TestSessionStore:
         sid = store.create_session("test_msgs")
         
         messages = [
-            {"type": "human", "content": "Scan 192.168.1.1"},
+            {"type": "human", "content": "Scan target.test"},
             {"type": "ai", "content": "Running nmap scan..."},
         ]
         store.save_messages(sid, messages)
@@ -51,7 +51,7 @@ class TestSessionStore:
         session = store.load_session(sid)
         assert session is not None
         assert len(session["messages"]) == 2
-        assert session["messages"][0]["content"] == "Scan 192.168.1.1"
+        assert session["messages"][0]["content"] == "Scan target.test"
         
         # Cleanup
         store.delete_session(sid)

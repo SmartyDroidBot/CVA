@@ -1,13 +1,10 @@
-"""Slash command handler for CVA CLI — v3 with multi-agent, guardrails, sessions.
+"""Slash command handler for the CVA CLI.
 
-Changes from v2:
-- Removed IntelligentParser dependency
-- /run now injects output into agent context
-- Added /mode command (supervisor/single)
-- Added /agent command (show active agent)
-- Added /sessions auto-creation at startup
-- Removed sandbox_enabled from /settings
-- Added /guardrails toggle
+Commands drive the unified planner/executor engine: /model switches the LLM,
+/target sets the engagement target, /agent shows the current phase, /run injects
+a raw command's output into context, /sessions manages persistence, and /report
+renders findings. (/mode is retained as a deprecation notice — CVA no longer has
+supervisor/single modes.)
 """
 
 import subprocess
@@ -24,7 +21,7 @@ class CommandHandler:
         "/help": "Show all available commands",
         "/auto": "Autonomous VAPT. Usage: /auto <target_url>",
         "/model": "Switch LLM model. Usage: /model ollama:qwen3:8b",
-        "/mode": "Switch agent mode. Usage: /mode supervisor|single",
+        "/mode": "(deprecated) CVA uses a single unified engine — no modes",
         "/agent": "Show which specialist agent is currently active",
         "/debug": "Toggle debug mode. Usage: /debug on|off",
         "/think": "Show/hide LLM reasoning. Usage: /think on|off",
@@ -120,7 +117,7 @@ class CommandHandler:
     def _auto(self, args: str):
         """Run autonomous VAPT. Usage: /auto <target_url>"""
         if not args.strip():
-            return "Usage: /auto <target_url> — e.g., /auto http://127.0.0.1:8080", None
+            return "Usage: /auto <target_url> (an authorized target you control)", None
 
         target = args.strip()
         if not target.startswith(("http://", "https://")):
@@ -207,7 +204,7 @@ class CommandHandler:
 
     def _agent(self) -> str:
         if self.orchestrator and hasattr(self.orchestrator, 'active_agent'):
-            return f"Active specialist: {self.orchestrator.active_agent}"
+            return f"Current phase: {self.orchestrator.active_agent}"
         return "Agent info unavailable."
 
     def _debug(self, args: str) -> str:
@@ -307,13 +304,12 @@ class CommandHandler:
         log_info = f"  Log file:   {self.session_logger.log_path or 'none'}\n"
         agent_info = ""
         if self.orchestrator and hasattr(self.orchestrator, 'active_agent'):
-            agent_info = f"  Active:     {self.orchestrator.active_agent}\n"
+            agent_info = f"  Phase:      {self.orchestrator.active_agent}\n"
+        model = getattr(settings, f"{settings.llm_provider}_model", settings.ollama_model)
         return (
             f"╔══ CVA Settings ══╗\n"
             f"  Provider:   {settings.llm_provider}\n"
-            f"  Model:      {settings.ollama_model}\n"
-            f"  Ollama URL: {settings.ollama_base_url}\n"
-            f"  Mode:       {settings.agent_mode}\n"
+            f"  Model:      {model}\n"
             f"{agent_info}"
             f"  Debug:      {'ON' if settings.debug_mode else 'OFF'}\n"
             f"  Thinking:   {'ON' if settings.show_thinking else 'OFF'}\n"

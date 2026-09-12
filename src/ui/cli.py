@@ -26,10 +26,10 @@ console = Console()
 # Update both places if you add a new slash command.
 SLASH_COMMANDS = {
     "/help":       "Show all available commands",
-    "/auto":       "Autonomous VAPT  /auto http://target:port",
+    "/auto":       "Autonomous VAPT  /auto <target-url>",
     "/model":      "Switch LLM model  e.g. /model ollama:qwen3:8b",
-    "/mode":       "Switch agent mode  /mode supervisor|single",
-    "/agent":      "Show active specialist agent",
+    "/mode":       "(deprecated) unified engine — no modes",
+    "/agent":      "Show the current VAPT phase",
     "/debug":      "Toggle debug mode  /debug on|off",
     "/think":      "Show/hide LLM reasoning  /think on|off",
     "/rawtools":   "Show/hide raw tool output  /rawtools on|off",
@@ -41,7 +41,7 @@ SLASH_COMMANDS = {
     "/report":     "Generate pentest report  md|html|both",
     "/progress":   "Show VAPT phase progress",
     "/findings":   "Show all findings from current session",
-    "/target":     "Set the pentest target  e.g. /target 192.168.1.1",
+    "/target":     "Set the pentest target  /target <ip-or-url>",
     "/bg":         "Background tasks  /bg [list|status <id>]",
     "/log":        "View current session log  /log [tail N]",
     "/kb":         "Knowledge base  /kb [status|search|update]",

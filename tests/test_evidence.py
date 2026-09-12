@@ -82,6 +82,6 @@ def test_recorded_finding_appears_in_report():
     rg = ReportGenerator()
     rg.target = "http://t"
     rec = FindingRecorder(report_gen=rg)
-    rec.record("SSRF", severity="high", evidence="fetched http://169.254.169.254")
+    rec.record("SSRF", severity="high", evidence="fetched the internal metadata endpoint")
     md = rg.generate_markdown()
     assert "SSRF" in md

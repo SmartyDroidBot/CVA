@@ -2,7 +2,6 @@
 
 Changes from v2:
 - Removed sandbox_enabled (was never enforced — false security)
-- Added agent_mode: supervisor or single
 - Added guardrails_enabled
 - Added auto_session: auto-creates session at startup
 """
@@ -31,9 +30,6 @@ class Settings(BaseSettings):
     # Google
     google_api_key: str = ""
     google_model: str = "gemini-2.5-flash"
-
-    # ── Agent Architecture ────────────────────────────────────────────────────
-    agent_mode: str = "supervisor"  # "supervisor" or "single"
 
     # ── Guardrails ────────────────────────────────────────────────────────────
     guardrails_enabled: bool = True

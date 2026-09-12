@@ -12,7 +12,7 @@ console = Console()
 def run_system_checks():
     """Run all system integration checks.
 
-    This is a manual, service-dependent harness (MongoDB/Qdrant/Ollama/MCP),
+    This is a manual, service-dependent harness (MongoDB/Ollama/MCP),
     not a pytest unit test — hence the non-``test_`` name so pytest does not
     collect it. Run directly with ``python tests/test_system.py``.
     """
@@ -115,7 +115,7 @@ def run_system_checks():
     try:
         from src.reporting.generator import ReportGenerator, Finding
         gen = ReportGenerator()
-        gen.target = "10.0.0.1"
+        gen.target = "target.test"
         gen.add_finding(Finding("Open SSH", severity="low", tool="nmap"))
         gen.add_finding(Finding("SQLi", severity="critical", cve="CVE-2024-9999"))
         md = gen.generate_markdown()
@@ -137,13 +137,13 @@ def run_system_checks():
     console.print("\n[bold]TEST 8: Task Tree / Progress Tracker[/bold]")
     try:
         from src.tracker.task_tree import TaskTree, Phase
-        tree = TaskTree(target="10.0.0.1")
+        tree = TaskTree(target="target.test")
         tree.add_action("Port scan", "nmap_scan", "22, 80, 443 open")
         tree.add_action("Dir enum", "gobuster_dir", "/admin, /login found")
         tree.add_action("SQLi test", "sqlmap_scan", "Vulnerable param: id")
         
         progress = tree.get_progress()
-        assert "10.0.0.1" in progress
+        assert "target.test" in progress
         assert tree.current_phase == Phase.EXPLOIT
         context = tree.get_context_for_agent()
         assert "PENTEST PROGRESS" in context
@@ -162,11 +162,11 @@ def run_system_checks():
         h_out, _ = cmd.execute("/help")
         assert "/report" in h_out and "/progress" in h_out
         
-        t_out, _ = cmd.execute("/target 192.168.1.1")
-        assert "192.168.1.1" in t_out
+        t_out, _ = cmd.execute("/target target.test")
+        assert "target.test" in t_out
         
         p_out, _ = cmd.execute("/progress")
-        assert "192.168.1.1" in p_out
+        assert "target.test" in p_out
         
         s_out, _ = cmd.execute("/settings")
         assert "Target" in s_out or "target" in s_out

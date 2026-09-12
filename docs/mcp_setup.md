@@ -1,6 +1,6 @@
 # MCP Setup Guide
 
-CVA uses the Model Context Protocol (MCP) to expose security tooling to the LangGraph agent. Servers live in `src/mcp_server/` and are loaded by `src/tools/mcp_client.py`, driven by `config/mcp_servers.yaml`.
+CVA uses the Model Context Protocol (MCP) to expose security tooling to the engine's executor. Servers live in `src/mcp_server/` and are loaded by `src/tools/mcp_client.py`, driven by `config/mcp_servers.yaml`.
 
 ## How it works
 

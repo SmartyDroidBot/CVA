@@ -1,20 +1,19 @@
 # CVA — Cognitive VAPT Assistant
 
-An AI-powered penetration-testing assistant with a Rich terminal UI. CVA guides you through the VAPT lifecycle using a LangGraph agent backed by a local LLM (Ollama) or a cloud model (OpenAI / Anthropic / Google), with security tooling exposed over the Model Context Protocol (MCP).
-
-> **Status:** active development. CVA runs as an interactive assistant today; the autonomous (`--auto`) driver and the multi-agent supervisor are being hardened. See `docs/` for design notes.
+An AI-powered penetration-testing assistant with a Rich terminal UI. CVA plans and executes the VAPT lifecycle with a single planner/executor engine, backed by whichever LLM you configure — a local model (Ollama) or a cloud model (OpenAI / Anthropic / Google) — with security tooling exposed over the Model Context Protocol (MCP).
 
 ## Features
 
-- **LangGraph agent** — a supervisor that routes to specialist personas (recon / exploit / post-exploit / reporter), plus a single-agent and an autonomous mode.
+- **Planner/executor engine** — one engine (`src/engine.py`) plans an engagement into a task graph and executes each task with a bounded ReAct loop. Both modes run on it: **copilot** (interactive, turn-by-turn) and **autonomous** (`--auto`).
+- **Model-agnostic** — Ollama (local) or OpenAI / Anthropic / Google (cloud), chosen in `.env` and switchable at runtime with `/model`. CVA never hard-codes a provider.
 - **Rich TUI** — colourful terminal interface with panels, markdown rendering, live `<think>` streaming, and a status line.
-- **VAPT phase tracking** — automatic phase inference (Recon → Enum → Vuln → Exploit → Post-Exploit → Report) from the tools used.
-- **MCP tool integration** — security tooling exposed through MCP servers (`src/mcp_server/`), driven by the agent.
-- **Knowledge base (RAG)** — static pentest knowledge always on, plus optional Qdrant vector retrieval over HackTricks / PayloadsAllTheThings / GTFOBins / OWASP CheatSheets.
+- **VAPT task graph & phase tracking** — engagements are a dependency graph of tasks; phase (Recon → Enum → Vuln → Exploit → Post-Exploit → Report) is inferred from the commands run.
+- **MCP tool integration** — generic tooling exposed through MCP servers (`src/mcp_server/`); the agent runs nmap/gobuster/sqlmap/etc. through `execute_shell_command`.
+- **Knowledge base (RAG)** — a local **SQLite FTS5** full-text index over HackTricks / PayloadsAllTheThings / GTFOBins / OWASP CheatSheets, behind a pluggable `KnowledgeSource` interface (no external services required).
+- **Structured findings** — the agent records confirmed findings via a `record_finding` tool; reports are generated from that evidence, not keyword guesses.
 - **Session management** — optional MongoDB-backed sessions; always-on per-session file logs.
-- **Report generation** — Markdown and HTML pentest reports from collected findings.
-- **Guardrails** — prompt-injection screening on input and a block/approve gate for dangerous shell commands.
-- **Multi-provider LLM** — Ollama (local) or OpenAI / Anthropic / Google (cloud) via `.env`, switchable at runtime.
+- **Report generation** — Markdown and HTML pentest reports.
+- **Guardrails** — prompt-injection screening on input, untrusted-data fencing of tool output, and a block/approve gate for dangerous shell commands.
 
 ## Environment
 
@@ -29,9 +28,9 @@ CVA is designed to run on **Kali Linux** (or another Linux pentest distro): it s
 | Linux (Kali recommended) | ✅ | POSIX shell + PTY features are used |
 | Python ≥ 3.12 | ✅ | |
 | [uv](https://astral.sh/uv) | ✅ | Fast Python package manager |
-| [Ollama](https://ollama.ai) | ✅ (default) | Or set a cloud provider in `.env` |
+| An LLM | ✅ | Ollama locally, **or** a cloud key (OpenAI / Anthropic / Google) — your choice in `.env` |
 | MongoDB | Optional | Without it, sessions are not persisted (file logs still work) |
-| Qdrant | Optional | Vector store for the RAG knowledge base |
+| Docker | Optional | Runs MongoDB; `demo.sh` uses it if present |
 | Kali security tools | For real tooling | `nmap`, `nikto`, `gobuster`, `sqlmap`, `searchsploit`, etc. |
 
 ### Installation
@@ -59,13 +58,15 @@ python main.py
 # or via the CLI wrapper (adds flags)
 python cva.py
 
-# Autonomous run against a target
-python cva.py --auto http://TARGET
+# Autonomous run against an authorized target you provide
+python cva.py --auto <target-url>
 ```
 
-`cva.py` flags: `--auto`, `--model <provider:model>`, `--mode supervisor|single`, `--no-guardrails`, `--no-approval`, `--debug`.
+`cva.py` flags: `--auto <target>`, `--model <provider:model>`, `--no-guardrails`, `--no-approval`, `--debug`.
 
 You'll be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at any time.
+
+> **Targets are yours to provide.** CVA ships no target and assumes none — stand up your own authorized lab/target separately and pass its URL. Only test systems you are authorized to test.
 
 ## Slash Commands
 
@@ -81,8 +82,7 @@ You'll be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at an
 | `/report [md\|html\|both]` | Generate a pentest report |
 | `/sessions [list\|new\|load <id>\|save\|delete <id>]` | Manage MongoDB sessions |
 | `/model <provider:model>` | Switch LLM at runtime (e.g. `/model ollama:llama3`) |
-| `/mode <supervisor\|single>` | Switch agent architecture |
-| `/agent` | Show the active specialist agent |
+| `/agent` | Show the current VAPT phase |
 | `/kb [status\|search <q>\|update]` | Knowledge base status / search / re-ingest |
 | `/log [tail N]` | View the current session log |
 | `/bg [list\|status <id>]` | Background task status |
@@ -95,47 +95,101 @@ You'll be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at an
 | `/clear` | Clear the screen |
 | `/exit` | Exit CVA (auto-saves the current session) |
 
+## Choosing your LLM (model-agnostic)
+
+CVA never hard-codes a provider. You choose one in your config file `.env` (copied from `.env.example`), and everything else respects it:
+
+```dotenv
+# .env — pick ONE provider and its default model.
+LLM_PROVIDER=ollama            # ollama | openai | anthropic | google
+
+# Local (default): needs Ollama running and the model pulled.
+OLLAMA_MODEL=qwen3:8b
+OLLAMA_BASE_URL=http://localhost:11434
+
+# Cloud: set LLM_PROVIDER above and the matching key + model.
+# OPENAI_API_KEY=sk-...        # OPENAI_MODEL=gpt-4o
+# ANTHROPIC_API_KEY=sk-ant-... # ANTHROPIC_MODEL=claude-sonnet-4-20250514
+# GOOGLE_API_KEY=...           # GOOGLE_MODEL=gemini-2.5-flash
+```
+
+Override for a single run with `python cva.py --model <provider:model>`, or switch live with `/model <provider:model>`. A capable model is recommended for reliable multi-step tool use; small local models can loop or emit malformed tool calls.
+
 ## Configuration
 
-### Environment variables (`.env`)
-
-Copy `.env.example` to `.env` and edit as needed. All settings are optional and fall back to defaults defined in `src/config.py` (Pydantic settings). Key groups: LLM provider + model, agent mode, guardrails, session/Mongo, Qdrant/KB, and UI/debug toggles. See `.env.example` for the full annotated list.
-
-### Config files (`config/`)
-
-| File | Purpose |
-|---|---|
-| `config/mcp_servers.yaml` | External MCP server definitions (loaded at startup) |
-
-> Agent personas and app defaults are **not** YAML-driven: personas live in `src/agents/*.py` and defaults in `src/config.py`.
+All settings are optional and fall back to defaults in `src/config.py` (Pydantic settings, read from `.env`): LLM provider + models, guardrails, session/Mongo, knowledge base (`KB_BACKEND`/`KB_DB_PATH`), and UI/debug toggles. See `.env.example` for the full annotated list. The only YAML config is `config/mcp_servers.yaml` (MCP server definitions); agent personas live in `src/agents/*.py`.
 
 ## Architecture
 
+Both modes run on one engine — a planner decomposes the goal into a task graph; a per-task ReAct executor runs each task, records findings, and the reporter renders them. Knowledge is pluggable behind an interface; tool output is fenced as untrusted data before it re-enters the model.
+
+```
+goal / target
+      │
+      ▼
+┌──────────────┐   read / write   ┌──────────────────────┐
+│  PLANNER     │◄────────────────►│  TASK GRAPH (DAG)     │  src/tracker/task_tree.py
+└──────┬───────┘                   └──────────┬───────────┘
+       │ next ready task                       │ log actions
+       ▼                                        ▼
+┌──────────────┐   tool calls     ┌──────────────────────┐
+│  EXECUTOR    │─────────────────►│  MCP TOOLS + KB       │  execute_shell_command, search_*,
+│ (ReAct loop) │◄─────────────────│  (fenced as data)     │  search_knowledge_base (FTS5)
+└──────┬───────┘   observations    └──────────────────────┘
+       │ record_finding
+       ▼
+┌──────────────┐                   ┌──────────────────────┐
+│  REPORTER    │◄──────────────────│  EVIDENCE STORE       │  src/memory/evidence.py
+└──────────────┘                   └──────────────────────┘
+```
+
 ```
 CVA/
-├── main.py                     # Interactive entry point — terminal UI loop
-├── cva.py                      # CLI wrapper (flags, --auto, --mode, --model)
+├── main.py                     # Interactive (copilot) entry point — terminal UI loop
+├── cva.py                      # CLI wrapper (--auto, --model, --no-guardrails, --no-approval)
 ├── src/
-│   ├── orchestrator.py         # LangGraph supervisor + specialist graph
-│   ├── auto.py                 # Autonomous ReAct driver
+│   ├── engine.py               # PentestEngine — planner + per-task ReAct executor (both modes)
+│   ├── auto.py                 # Autonomous runner (drives the engine, Rich UI)
 │   ├── config.py               # Pydantic settings (reads .env)
 │   ├── agents/                 # Specialist personas: recon, exploit, post_exploit, reporter, registry
 │   ├── ui/                     # cli.py (Rich TUI) + commands.py (slash commands)
 │   ├── brain/                  # llm_provider.py (multi-provider) + thinking.py (<think> parsing)
-│   ├── tools/                  # mcp_client.py, kb_tool.py, shell_session.py
+│   ├── tools/                  # mcp_client.py, kb_tool.py, finding_tool.py, shell_session.py
 │   ├── mcp_server/             # MCP servers: kali.py, exploitdb.py
-│   ├── memory/                 # session_store.py, session_logger.py, summarizer.py
-│   ├── tracker/                # task_tree.py (VAPT phase + action tracker)
-│   ├── knowledge/              # rag.py, static_kb.py, vector_kb.py
-│   ├── guardrails/             # command.py (dangerous-command gate), injection.py
+│   ├── memory/                 # session_store.py, session_logger.py, summarizer.py, evidence.py
+│   ├── tracker/                # task_tree.py (task graph + phase tracking)
+│   ├── knowledge/              # base.py (KnowledgeSource), fts_kb.py (FTS5), rag.py (merger)
+│   ├── guardrails/             # command.py (dangerous-command gate), injection.py (+ output screening)
 │   └── reporting/              # generator.py (Markdown/HTML reports)
-├── scripts/ingest_kb.py        # Build the Qdrant knowledge base
+├── scripts/ingest_kb.py        # Build the FTS5 knowledge-base index
 ├── config/mcp_servers.yaml     # MCP server definitions
-├── docs/                       # Extended documentation
-├── tests/                      # Pytest suite
-├── .env.example                # Environment template
-└── pyproject.toml              # Project metadata and dependencies
+├── demo.sh · Makefile          # One-command demo + convenience targets
+├── docs/ · tests/ · .env.example · pyproject.toml
 ```
+
+### How it compares
+
+CVA's shape follows the current field — a deterministic harness around the model rather than one big prompt:
+
+| System | Shared idea |
+|---|---|
+| **VulnBot** | planner + executor over a penetration task graph, runs on open models |
+| **PentestGPT / V2** | explicit task tree to prevent "context collapse" |
+| **HackingBuddyGPT** | persistent planner + focused per-task executor |
+| **CAI / PentAGI** | model-agnostic (local or cloud), tools behind a clean layer |
+
+## Demo
+
+CVA ships no target — stand up your own authorized target first, then:
+
+```bash
+# 1. choose your model in .env (see "Choosing your LLM")
+cp .env.example .env && $EDITOR .env
+# 2. run an autonomous engagement against your target and get a report
+./demo.sh <target-url>          # or:  make demo TARGET=<target-url>
+```
+
+`demo.sh` verifies your configured provider is ready, starts optional MongoDB (if Docker is present), builds the FTS5 knowledge base on first run, runs the engagement, and prints the report path in `reports/`.
 
 ## Available MCP tools
 
@@ -152,7 +206,7 @@ The MCP servers in `src/mcp_server/` currently expose a small set of **generic**
 ## VAPT workflow example
 
 ```
-CVA ❯ /target 192.168.1.100
+CVA ❯ /target <ip-or-url>
 CVA ❯ Perform a basic recon scan on the target
 CVA ❯ /progress
 CVA ❯ Enumerate web directories
@@ -166,14 +220,14 @@ CVA ❯ /report md
 uv run pytest tests/ -v
 ```
 
-Tests that need external services (MongoDB, Qdrant, Ollama, the MCP servers) **skip** automatically when those services aren't available. `tests/test_system.py` and `tests/test_e2e_juiceshop.py` are manual integration scripts — run them directly (`python tests/test_system.py`).
+Tests that need external services (MongoDB, the MCP servers) **skip** automatically when those services aren't available. `tests/test_system.py` is a manual integration harness — run it directly (`python tests/test_system.py`).
 
 ## Troubleshooting
 
 - **"Failed to load MCP tools"** — run from the project root; ensure `src/mcp_server/kali.py` exists and the security tools are installed on the host.
 - **"Failed to initialize agent"** — confirm Ollama is running (`ollama serve`), or set a cloud provider (`LLM_PROVIDER=openai`, plus the API key) in `.env`.
 - **"MongoDB unavailable"** — CVA continues without session persistence; per-session file logs in `logs/` still record activity.
-- **Vector KB unavailable** — run `python scripts/ingest_kb.py` with Ollama + Qdrant running to build the `cva_kb` collection; until then CVA uses the static KB only.
+- **Knowledge base empty** — run `python scripts/ingest_kb.py` (or `make kb`) to build the local FTS5 index at `data/kb/cva_kb.sqlite3`; no external service is required.
 
 ## License
 

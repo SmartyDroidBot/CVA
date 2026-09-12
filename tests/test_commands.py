@@ -26,7 +26,7 @@ class TestEnhancedCommands:
     
     @pytest.fixture
     def handler(self):
-        tree = TaskTree(target="10.0.0.1")
+        tree = TaskTree(target="target.test")
         report = ReportGenerator()
         return CommandHandler(task_tree=tree, report_gen=report)
     
@@ -38,18 +38,18 @@ class TestEnhancedCommands:
         assert "/target" in output
     
     def test_target_set(self, handler):
-        output, _ = handler.execute("/target 192.168.1.50")
-        assert "192.168.1.50" in output
+        output, _ = handler.execute("/target target.test")
+        assert "target.test" in output
         # Bare host/IP is normalised with an http:// scheme.
-        assert handler.task_tree.target == "http://192.168.1.50"
+        assert handler.task_tree.target == "http://target.test"
     
     def test_target_show(self, handler):
         output, _ = handler.execute("/target")
-        assert "10.0.0.1" in output
+        assert "target.test" in output
     
     def test_progress_empty(self, handler):
         output, _ = handler.execute("/progress")
-        assert "Target" in output or "10.0.0.1" in output
+        assert "Target" in output or "target.test" in output
     
     def test_findings_empty(self, handler):
         output, _ = handler.execute("/findings")
@@ -87,7 +87,7 @@ class TestSessionCommands:
     def handler_with_store(self):
         from src.memory.session_store import SessionStore
         store = SessionStore()
-        tree = TaskTree(target="test.com")
+        tree = TaskTree(target="target.test")
         handler = CommandHandler(session_store=store, task_tree=tree)
         yield handler
         store.close()
