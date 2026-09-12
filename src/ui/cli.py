@@ -42,6 +42,7 @@ SLASH_COMMANDS = {
     "/progress":   "Show VAPT phase progress",
     "/findings":   "Show all findings from current session",
     "/target":     "Set the pentest target  /target <ip-or-url>",
+    "/scope":      "Show/set engagement scope  /scope [web|network|api|host]",
     "/bg":         "Background tasks  /bg [list|status <id>]",
     "/log":        "View current session log  /log [tail N]",
     "/kb":         "Knowledge base  /kb [status|search|update]",

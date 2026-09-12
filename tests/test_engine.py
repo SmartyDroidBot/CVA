@@ -195,3 +195,46 @@ def test_run_reports_failure_when_llm_unreachable():
     assert outcome["failed"] > 0           # tasks were attempted and failed
     assert outcome["error"] is not None    # the failure reason is captured
     assert "refused" in outcome["error"].lower()
+
+
+# ── Scope-aware planning + boundary enforcement ───────────────────────────────
+
+from src.scope import Scope, EngagementType
+
+
+def test_plan_from_scope_is_deterministic_web():
+    # A WEB scope yields the web methodology template with no LLM planning call.
+    eng = PentestEngine(llm=FakeLLM("[]"), tools=[FakeTool()],
+                        target="http://localhost:9999",
+                        scope=Scope.for_target("http://localhost:9999"))
+    tasks = eng.plan("goal")
+    descs = " ".join(t.description.lower() for t in tasks)
+    assert "fingerprint" in descs          # web-shaped
+    assert "host discovery" not in descs   # not the network methodology
+
+
+class OutOfScopeLLM:
+    """Executor that tries to hit an out-of-scope host, then finishes."""
+    def bind_tools(self, tools):
+        return self
+
+    def invoke(self, messages):
+        if any(isinstance(m, ToolMessage) for m in messages):
+            return FakeAI(content="done")
+        return FakeAI(content="scanning", tool_calls=[
+            {"name": "execute_shell_command",
+             "args": {"command": "curl http://evil.com"}, "id": "c1"},
+        ])
+
+
+def test_out_of_scope_command_is_blocked():
+    tool = FakeTool()
+    eng = PentestEngine(llm=OutOfScopeLLM(), tools=[tool],
+                        target="http://localhost:9999",
+                        scope=Scope.for_target("http://localhost:9999"))
+    events = []
+    eng.on_event = lambda k, d: events.append((k, d))
+    task = eng.graph.add_task("probe", phase=Phase.VULN)
+    eng.run_task(task)
+    assert tool.calls == []                                  # never executed
+    assert any(k == "scope_block" for k, _ in events)        # blocked + surfaced

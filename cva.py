@@ -46,6 +46,18 @@ Examples:
         help="LLM to use (e.g. ollama:qwen3:8b, openai:gpt-4o, anthropic:claude-sonnet-4-20250514)",
     )
     parser.add_argument(
+        "--type",
+        dest="engagement_type",
+        choices=["auto", "web", "network", "api", "host"],
+        default="auto",
+        help="Engagement type / methodology (default: auto-detect from the target)",
+    )
+    parser.add_argument(
+        "--scope",
+        metavar="TARGETS",
+        help="Extra in-scope targets (comma-separated) beyond the --auto target",
+    )
+    parser.add_argument(
         "--no-guardrails",
         action="store_true",
         help="Disable input guardrails (not recommended)",
@@ -98,7 +110,10 @@ def main():
     if args.auto:
         # ── AUTONOMOUS MODE ───────────────────────────────────────────────
         from src.auto import run_auto
-        run_auto(target=args.auto, model=args.model)
+        etype = None if args.engagement_type == "auto" else args.engagement_type
+        extra = [t.strip() for t in args.scope.split(",")] if args.scope else None
+        run_auto(target=args.auto, model=args.model,
+                 engagement_type=etype, extra_targets=extra)
 
     else:
         # ── INTERACTIVE MODE ──────────────────────────────────────────────

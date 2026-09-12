@@ -198,7 +198,7 @@ class AutoRunner:
     """
 
     def __init__(self, target: str, tools: list, model_override: str = None,
-                 orchestrator=None, report_gen=None, session_logger=None):
+                 orchestrator=None, report_gen=None, session_logger=None, scope=None):
         self.target = target.rstrip("/")
         self.host = self._extract_host(target)
         self.tools = list(tools)
@@ -206,6 +206,11 @@ class AutoRunner:
         self.tool_call_count = 0
         self._stop = False
         self.current_phase = "reconnaissance"
+
+        # Engagement scope drives the methodology + boundaries. Auto-detect from
+        # the target if not supplied.
+        from src.scope import Scope
+        self.scope = scope or Scope.for_target(self.target)
 
         # Use existing subsystems if provided (from /auto command)
         self.report_gen = report_gen or ReportGenerator()
@@ -258,6 +263,7 @@ class AutoRunner:
             llm=self.llm,
             tools=self.tools,
             target=self.target,
+            scope=self.scope,
             session_logger=self.session_logger,
             on_event=self._on_engine_event,
         )
@@ -317,6 +323,7 @@ class AutoRunner:
         table.add_row(Text("CVA — Cognitive VAPT Assistant v3", style="bold white"))
         table.add_row(Text("◆  AUTONOMOUS MODE  ◆", style="bold yellow"))
         table.add_row(Text(f"Target: {self.target}", style="bold cyan"))
+        table.add_row(Text(f"Type:   {self.scope.engagement_type.value.upper()}", style="bold cyan"))
         table.add_row(Text(f"Model:  {settings.llm_provider}:{getattr(settings, f'{settings.llm_provider}_model', settings.ollama_model)}", style="dim white"))
         table.add_row(Text(f"Time:   {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", style="dim white"))
         console.print(table, justify="center")
@@ -610,10 +617,17 @@ Be concise, factual, and professional."""
 
 # ── Public Entry Points ──────────────────────────────────────────────────────
 
-def run_auto(target: str, model: str = None):
+def run_auto(target: str, model: str = None, engagement_type: str = None,
+             extra_targets: list = None):
     """Entry point for --auto CLI flag."""
     from src.tools.mcp_client import get_mcp_tools
     from src.tools.shell_session import get_session_tools, shutdown_all
+    from src.scope import Scope, EngagementType, detect_type
+
+    etype = EngagementType(engagement_type) if engagement_type else detect_type(target)
+    scope = Scope.for_target(target, engagement_type=etype)
+    if extra_targets:
+        scope.targets.extend(t for t in extra_targets if t)
 
     console.print(Rule("[cyan]Loading Tools[/cyan]", style="cyan"))
 
@@ -654,7 +668,8 @@ def run_auto(target: str, model: str = None):
         sys.exit(1)
     console.print(f"  [green]✓ {escape(msg)}[/green]")
 
-    runner = AutoRunner(target=target, tools=tools, model_override=model)
+    console.print(f"  [green]✓ Engagement type: {scope.engagement_type.value.upper()}[/green]")
+    runner = AutoRunner(target=target, tools=tools, model_override=model, scope=scope)
 
     import atexit
     atexit.register(shutdown_all)

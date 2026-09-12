@@ -26,6 +26,7 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 from src.brain.llm_provider import get_llm
 from src.brain.thinking import strip_thinking
 from src.guardrails.injection import screen_tool_output
+from src.scope import EngagementType, Scope, detect_type, profile_for
 from src.tracker.task_tree import Phase, TaskTree, infer_phase_from_command
 
 MAX_TASK_ROUNDS = 6      # LLM↔tool iterations per task
@@ -111,8 +112,10 @@ class PentestEngine:
     def __init__(self, llm, tools: List, target: str = "", kb=None,
                  task_graph: Optional[TaskTree] = None, session_logger=None,
                  on_event: Optional[Callable[[str, dict], None]] = None,
+                 scope: Optional[Scope] = None,
                  max_task_rounds: int = MAX_TASK_ROUNDS, max_tasks: int = MAX_TASKS):
         self.llm = llm
+        self.scope = scope
         self.tools = tools or []
         self.tool_map = {t.name: t for t in self.tools}
         self.target = target
@@ -137,7 +140,21 @@ class PentestEngine:
     # ── Planning ──────────────────────────────────────────────────────────────
 
     def plan(self, goal: str) -> List:
-        """Populate the task graph from the goal. Falls back to a default plan."""
+        """Populate the task graph.
+
+        When a scope with a known engagement type is set, the plan is the
+        deterministic methodology template for that type (Structured-Attack-Tree
+        style: the methodology is code-owned, the LLM only fills in commands).
+        Otherwise fall back to LLM planning, then a generic default.
+        """
+        template = profile_for(self.scope.engagement_type) if self.scope else []
+        if template:
+            for phase, desc in template:
+                self.graph.add_task(desc, phase=phase)
+            tasks = self.graph.all_tasks()
+            self._emit("planned", tasks=tasks)
+            return tasks
+
         system = _PLANNER_SYSTEM.format(target=self.target or "the target")
         try:
             resp = self.llm.invoke([SystemMessage(content=system),
@@ -199,8 +216,19 @@ class PentestEngine:
             for tc in tool_calls:
                 name, args = tc.get("name", ""), tc.get("args", {}) or {}
                 self._emit("tool_call", name=name, args=args)
+                command = args.get("command", "") if isinstance(args, dict) else ""
                 tool = self.tool_map.get(name)
-                if tool is None:
+                # Hard scope boundary: never run a command aimed out of scope.
+                blocked = None
+                if self.scope and command:
+                    ok, host = self.scope.is_command_in_scope(command)
+                    if not ok:
+                        blocked = host
+                if blocked is not None:
+                    output = (f"[BLOCKED: '{blocked}' is out of scope. In-scope targets: "
+                              f"{', '.join(self.scope.targets) or 'none'}. Re-target the command.]")
+                    self._emit("scope_block", name=name, host=blocked, command=command)
+                elif tool is None:
                     output = f"Unknown tool: {name}"
                 else:
                     try:
@@ -213,7 +241,6 @@ class PentestEngine:
                         self.session_logger.log_tool_result(name, output)
                     except Exception:
                         pass
-                command = args.get("command", "") if isinstance(args, dict) else ""
                 self.graph.add_action(f"{action_prefix}{name}", tool=name,
                                       result_summary=output[:100], command=command)
                 # Fence attacker-influenced output as untrusted data before it
@@ -242,6 +269,8 @@ class PentestEngine:
             phase=task.phase.value.replace("_", " "),
             graph_ctx=graph_ctx, kb_ctx=kb_ctx,
         )
+        if self.scope:
+            system = f"{self.scope.scope_prompt()}\n\n{system}"
         produced = self._react(system, [HumanMessage(content=task.description)],
                                action_prefix=f"Task {task.id}: ")
         # Task result text = the AI (non-tool) messages, thinking stripped.
@@ -292,7 +321,10 @@ class PentestEngine:
     def _interactive_system(self) -> str:
         target_line = f" against {self.target}" if self.target else ""
         graph_ctx = self.graph.get_context_for_agent()
-        return _INTERACTIVE_SYSTEM.format(target_line=target_line, graph_ctx=graph_ctx)
+        system = _INTERACTIVE_SYSTEM.format(target_line=target_line, graph_ctx=graph_ctx)
+        if self.scope:
+            system = f"{self.scope.scope_prompt()}\n\n{system}"
+        return system
 
     def answer(self, user_input: str) -> List:
         """Handle one interactive user turn with conversation memory.
@@ -327,9 +359,24 @@ class PentestEngine:
     def set_target(self, target: str):
         self.target = (target or "").strip().rstrip("/")
         self.graph.target = self.target
+        # Keep scope in step with the target: create it (auto-detecting the type)
+        # or update the in-scope target of an existing scope.
+        if self.scope is None:
+            self.scope = Scope.for_target(self.target)
+        else:
+            self.scope.targets = [self.target] if self.target else []
+            if self.scope.engagement_type == EngagementType.GENERIC and self.target:
+                self.scope.engagement_type = detect_type(self.target)
         self.history.append(SystemMessage(
-            content=f"[TARGET UPDATED] The engagement target is now: {self.target}. "
-                    f"Direct all subsequent actions at this target."))
+            content=f"[TARGET UPDATED] The engagement target is now: {self.target} "
+                    f"({self.scope.engagement_type.value} engagement). "
+                    f"Direct all subsequent actions at this target only."))
+
+    def set_scope(self, scope: Scope):
+        self.scope = scope
+        if scope.targets:
+            self.target = scope.targets[0]
+            self.graph.target = self.target
 
     def switch_model(self, provider: str, model: str = None):
         from src.config import settings

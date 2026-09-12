@@ -62,7 +62,7 @@ python cva.py
 python cva.py --auto <target-url>
 ```
 
-`cva.py` flags: `--auto <target>`, `--model <provider:model>`, `--no-guardrails`, `--no-approval`, `--debug`.
+`cva.py` flags: `--auto <target>`, `--model <provider:model>`, `--type {auto,web,network,api,host}`, `--scope <extra,targets>`, `--no-guardrails`, `--no-approval`, `--debug`.
 
 You'll be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at any time.
 
@@ -73,7 +73,8 @@ You'll be greeted by the CVA banner and the `CVA ❯` prompt. Type `/help` at an
 | Command | Description |
 |---|---|
 | `/help` | Show all commands |
-| `/target <ip/url>` | Set the pentest target |
+| `/target <ip/url>` | Set the pentest target (auto-detects the engagement type) |
+| `/scope [type\|add\|out]` | Show/set engagement scope (`/scope web\|network\|api\|host`, `/scope add <host>`, `/scope out <host>`) |
 | `/auto <target_url>` | Run an autonomous VAPT pass |
 | `/run <cmd>` | Execute a raw shell command; inject output into agent context |
 | `/tools` | List loaded MCP tools |
@@ -193,6 +194,26 @@ CVA's shape follows the current field — a deterministic harness around the mod
 | **PentestGPT / V2** | explicit task tree to prevent "context collapse" |
 | **HackingBuddyGPT** | persistent planner + focused per-task executor |
 | **CAI / PentAGI** | model-agnostic (local or cloud), tools behind a clean layer |
+
+## Scoped engagements
+
+CVA runs the methodology that fits the target instead of a generic one. It infers an
+**engagement type** from the target and plans from a curated, per-type template (so a web app
+gets HTTP tooling, not nmap sweeps, and a network range starts with host/service discovery):
+
+| Type | Detected from | Methodology |
+|---|---|---|
+| `web` | `http(s)://…` | fingerprint → content discovery → web vulns (SQLi/XSS/auth/IDOR/SSRF) |
+| `api` | URL with `/api`, `/graphql`, `/openapi`… | schema discovery → authz/BOLA → injection → rate-limit |
+| `network` | IP / CIDR / bare host | host discovery → service scan → enumeration → version CVEs |
+| `host` | explicit `--type host` | local enum → privilege escalation → credential harvest |
+
+Set it explicitly with `--type` / the `/scope` command, or let it auto-detect from `/target`.
+The scope is injected into every agent turn, and **commands aimed at out-of-scope hosts are
+hard-blocked** before they run (shown on screen). This design follows the Structured Attack
+Tree result ([arXiv 2509.07939](https://arxiv.org/abs/2509.07939)): a code-owned methodology
+substantially raises task completion and cuts wasted queries versus free-form planning. Add or
+edit profiles in `src/scope.py` (`PROFILES`).
 
 ## Demo
 

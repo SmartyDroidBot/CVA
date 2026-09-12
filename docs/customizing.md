@@ -43,6 +43,18 @@ The agent runs tools by name. Today the MCP servers expose `execute_shell_comman
 CVA also registers the in-process `search_knowledge_base` and `record_finding` tools.
 Add or wire MCP servers in `config/mcp_servers.yaml` — see `docs/mcp_setup.md`.
 
+## Engagement profiles (scope)
+
+`src/scope.py` decides *which methodology* runs. `detect_type()` maps a target to an
+`EngagementType` (web / api / network / host), and `PROFILES` holds a curated, phase-tagged
+task template per type — the planner instantiates the matching template deterministically
+instead of free-forming a plan. `Scope.scope_prompt()` is injected into every agent turn, and
+`Scope.is_command_in_scope()` hard-blocks commands aimed at out-of-scope hosts.
+
+To add or tune a methodology, edit `PROFILES[EngagementType.X]` — an ordered list of
+`(Phase, "task description with tool guidance")`. To add a whole new engagement type, add an
+`EngagementType` member, a `PROFILES` entry, a `_TYPE_RULES` line, and a `detect_type` hint.
+
 ## VAPT phase mapping
 
 `src/tracker/task_tree.py` infers the current phase from the command that ran

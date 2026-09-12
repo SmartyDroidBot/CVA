@@ -35,6 +35,7 @@ class CommandHandler:
         "/progress": "Show VAPT phase progress and task tree",
         "/findings": "Show all findings from current session",
         "/target": "Set the target. Usage: /target <ip/url>",
+        "/scope": "Show/set engagement scope. Usage: /scope [web|network|api|host | add <host> | out <host>]",
         "/bg": "Background tasks. Usage: /bg [list|status <id>]",
         "/log": "View current session log. Usage: /log [tail N]",
         "/kb": "Knowledge base. Usage: /kb [status|search <query>|update]",
@@ -97,6 +98,7 @@ class CommandHandler:
             "/progress": lambda: (self._progress(), None),
             "/findings": lambda: (self._findings(), None),
             "/target": lambda: (self._set_target(args), None),
+            "/scope": lambda: (self._scope(args), None),
             "/bg": lambda: (self._bg(args), None),
             "/log": lambda: (self._log(args), None),
             "/kb": lambda: (self._kb(args), None),
@@ -491,8 +493,12 @@ class CommandHandler:
             )
 
         target = args.strip().rstrip("/")
-        # Normalise: add scheme if bare IP/hostname
-        if target and not target.startswith(("http://", "https://")) and not target.startswith("/"):
+        # Normalise: add an http:// scheme for hostnames, but NOT for bare IPs or
+        # CIDRs (those are network targets and should auto-detect as such).
+        import re
+        _is_ip_or_cidr = re.match(r"^\d{1,3}(\.\d{1,3}){3}(/\d{1,2})?$", target)
+        if (target and not target.startswith(("http://", "https://"))
+                and not target.startswith("/") and not _is_ip_or_cidr):
             target = f"http://{target}"
 
         # Update all subsystems
@@ -504,10 +510,46 @@ class CommandHandler:
             self.orchestrator.set_target(target)   # injects into LLM context
 
         self.session_logger.log_event("target", f"Target set to: {target}")
+        etype = ""
+        scope = getattr(self.orchestrator, "scope", None) if self.orchestrator else None
+        if scope is not None:
+            etype = f"  Engagement type (auto-detected): {scope.engagement_type.value.upper()} — /scope to change.\n"
         return (
             f"✓ Target set to: {target}\n"
+            f"{etype}"
             f"  The LLM has been notified. All agent prompts now include this target."
         )
+
+    def _scope(self, args: str) -> str:
+        """Show or set the engagement scope (type / in-scope / out-of-scope)."""
+        scope = getattr(self.orchestrator, "scope", None) if self.orchestrator else None
+        if scope is None:
+            return "No scope yet — set a target first with /target <ip/url>."
+
+        from src.scope import EngagementType
+        parts = args.strip().split(maxsplit=1)
+        sub = parts[0].lower() if parts else ""
+        val = parts[1].strip() if len(parts) > 1 else ""
+
+        if not sub:
+            return (
+                "╔══ Engagement Scope ══╗\n"
+                f"  Type:        {scope.engagement_type.value}\n"
+                f"  In-scope:    {', '.join(scope.targets) or '(none)'}\n"
+                f"  Out-of-scope:{', '.join(scope.out_of_scope) or ' (everything else)'}\n"
+                "╚══════════════════════╝\n"
+                "Set: /scope web|network|api|host | /scope add <host> | /scope out <host>"
+            )
+        if sub in ("web", "network", "api", "host", "generic"):
+            scope.engagement_type = EngagementType(sub)
+            return f"✓ Engagement type set to: {sub.upper()} (the plan/methodology will follow this)."
+        if sub == "add" and val:
+            scope.targets.append(val)
+            return f"✓ Added in-scope target: {val}"
+        if sub == "out" and val:
+            scope.out_of_scope.append(val)
+            return f"✓ Added out-of-scope: {val}"
+        return "Usage: /scope [web|network|api|host | add <host> | out <host>]"
 
     def _log(self, args: str) -> str:
         """View current session log."""
