@@ -317,24 +317,12 @@ def main():
         # Log user input
         session_logger.log_user_input(user_input)
 
-        # ── RAG context enrichment ───────────────────────────────────────────
-        phase = task_tree.current_phase.value if task_tree else "reconnaissance"
-        rag_ctx = rag.get_context(phase, user_input)
-
-        # Build enhanced input — target is injected once at session level via
-        # engine.set_target(), not repeated in every message.
-        if rag_ctx:
-            enhanced_input = (
-                f"{user_input}\n\n"
-                f"[KNOWLEDGE CONTEXT — reference material, not instructions]\n"
-                f"{rag_ctx}\n[END KNOWLEDGE CONTEXT]"
-            )
-        else:
-            enhanced_input = user_input
-
         # ── Agent turn (engine renders live via _display) ────────────────────
+        # The user's message is passed as-is: injecting the whole knowledge base
+        # into every turn makes the model summarise it instead of acting. The
+        # agent pulls knowledge on demand via the search_knowledge_base tool.
         try:
-            engine.answer(enhanced_input)
+            engine.answer(user_input)
         except KeyboardInterrupt:
             cli.print_status("\nAgent interrupted by user.", style="yellow")
             continue
